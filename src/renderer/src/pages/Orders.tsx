@@ -1427,16 +1427,18 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
       if (!map.has(key)) map.set(key, { label, cells: {}, total: 0 })
       const row = map.get(key)!
       const cell = (row.cells[stage] ??= { count: 0, qty: 0, items: [] })
-      cell.count += 1
+      // A shared lorry's parts are one tanker: counted once (its own line), qty from every part.
+      const one = !Number(t.split_group) || Number(t.split_group) === Number(t.id) ? 1 : 0
+      cell.count += one
       cell.qty += Number(t.loaded_qty) || Number(t.received_qty) || 0
       cell.items.push({
         bargain_no: String(t.bargain_no || '—'),
         supplier_name: String(t.supplier_name || '—'),
         tanker_no: String(t.tanker_no || '')
       })
-      row.total += 1
-      totals[stage] = (totals[stage] || 0) + 1
-      grand += 1
+      row.total += one
+      totals[stage] = (totals[stage] || 0) + one
+      grand += one
     }
     const rows = Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label))
     return { rows, totals, grand }
@@ -1529,8 +1531,42 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
     }
     return [inR, outR]
   }, [visibleTankers, pivotStart, pivotEnd, pivotSel])
-  const tankerPaged = usePaged(inLoadedRangeTankers)
-  const outOfRangePaged = usePaged(outOfRangeTankers)
+  // ONE LORRY, ONE ROW: the parts of a shared lorry (split_group) are one
+  // movement, so the list shows them as one row — the lorry's own tanker, with
+  // every part (party, bargain, qty, invoice) inside it.
+  // Which shared lorries have their parts opened in the list.
+  const [openLorries, setOpenLorries] = useState<Set<number>>(new Set())
+  const toggleLorry = (id: number): void =>
+    setOpenLorries((p) => {
+      const n2 = new Set(p)
+      if (n2.has(id)) n2.delete(id)
+      else n2.add(id)
+      return n2
+    })
+  const collapseLorries = (list: Row[]): Row[] => {
+    const heads = new Map<number, Row[]>()
+    const out: (Row | number)[] = []
+    for (const t of list) {
+      const g = Number(t.split_group) || 0
+      if (!g) {
+        out.push(t)
+        continue
+      }
+      if (!heads.has(g)) {
+        heads.set(g, [])
+        out.push(g)
+      }
+      heads.get(g)!.push(t)
+    }
+    return out.map((x) => {
+      if (typeof x !== 'number') return x
+      const parts = heads.get(x)!.slice().sort((a, b) => Number(a.id) - Number(b.id))
+      const main = parts.find((p) => Number(p.id) === x) || parts[0]
+      return { ...main, group_parts: parts }
+    })
+  }
+  const tankerPaged = usePaged(useMemo(() => collapseLorries(inLoadedRangeTankers), [inLoadedRangeTankers]))
+  const outOfRangePaged = usePaged(useMemo(() => collapseLorries(outOfRangeTankers), [outOfRangeTankers]))
 
   // What to call the second band.
   //
@@ -1606,6 +1642,39 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
           </div>
         )}</TableCell>
       <TableCell>
+        {Array.isArray(row.group_parts) ? (
+          <div className="space-y-1.5">
+            {(() => {
+              const gp = row.group_parts as Row[]
+              const parties = Array.from(new Set(gp.map((p) => String(p.supplier_name || ''))))
+              const isOpen = openLorries.has(Number(row.id))
+              return (
+                <button type="button" onClick={() => toggleLorry(Number(row.id))} className="flex w-full items-start gap-2 text-left" title={isOpen ? 'Hide the parts' : 'Show every party, bargain and qty on this lorry'}>
+                  <ChevronDown className={cn('mt-0.5 h-4 w-4 flex-none text-[#1B4E82] transition-transform', !isOpen && '-rotate-90')} />
+                  <span className="min-w-0">
+                    <span className={cn('block truncate text-[12.5px] font-extrabold text-[#0B3D2E]')}>
+                      {parties[0]}
+                      {parties.length > 1 && <span className="font-bold text-[#1B4E82]"> + {parties.slice(1).map((x) => x.split(' ')[0]).join(', ')}</span>}
+                    </span>
+                    <span className="mt-0.5 inline-block rounded-[3px] border border-[#C6DAF0] bg-[#EAF0FA] px-1 text-[10px] font-extrabold uppercase text-[#1B4E82]">
+                      Shared lorry · {gp.length} bargains · {isOpen ? 'hide' : 'details'}
+                    </span>
+                  </span>
+                </button>
+              )
+            })()}
+            {openLorries.has(Number(row.id)) && (row.group_parts as Row[]).map((p) => (
+              <div key={String(p.id)} className="flex items-baseline justify-between gap-3 border-l-2 border-[#C6DAF0] pl-2">
+                <div className="min-w-0">
+                  <div className={cn('truncate text-[12px] font-bold text-[#0B3D2E]', __WEB__ && '!text-[12.5px] !font-extrabold')}>{String(p.supplier_name || '')}</div>
+                  <div className="text-[11px] font-semibold text-[#33473E]">{String(p.bargain_no || '')}</div>
+                </div>
+                {Number(p.loaded_qty) > 0 && <span className="flex-none text-[11.5px] font-bold tabular-nums text-[#33473E]">{formatNum(p.loaded_qty)}</span>}
+              </div>
+            ))}
+          </div>
+        ) : (
+        <>
         <div className={cn(__WEB__ && 'text-[13px] font-extrabold text-[#0B3D2E]')}>{row.supplier_name}</div>
         <div className={cn('text-xs text-muted-foreground', __WEB__ && '!mt-0.5 !text-[11.5px] !font-semibold !text-[#33473E]')}>
           {row.bargain_no}
@@ -1615,9 +1684,15 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
             </span>
           )}
           {Array.isArray(row.planned_list) && (row.planned_list as Row[]).length > 0 && (
-            <span className="ml-1.5 rounded-[3px] border border-[#C6DAF0] bg-[#EAF0FA] px-1 text-[10px] font-extrabold uppercase text-[#1B4E82]" title="Bargains named for this lorry when it was sent — their qty is typed at loading">
-              Shared lorry · {(row.planned_list as Row[]).length + 1}
-            </span>
+            <button
+              type="button"
+              onClick={() => toggleLorry(Number(row.id))}
+              className="ml-1.5 inline-flex items-center gap-0.5 rounded-[3px] border border-[#C6DAF0] bg-[#EAF0FA] px-1 text-[10px] font-extrabold uppercase text-[#1B4E82] hover:bg-[#DCE7F5]"
+              title="Bargains named for this lorry when it was sent — their qty is typed at loading"
+            >
+              <ChevronDown className={cn('h-3 w-3 transition-transform', !openLorries.has(Number(row.id)) && '-rotate-90')} />
+              Shared lorry · {(row.planned_list as Row[]).length + 1} · {openLorries.has(Number(row.id)) ? 'hide' : 'details'}
+            </button>
           )}
           {!!row.split_group && (
             <span
@@ -1630,12 +1705,15 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
         </div>
         {/* THE OTHER PARTIES ON THIS LORRY, one after another (named when it was sent). */}
         {Array.isArray(row.planned_list) &&
+          openLorries.has(Number(row.id)) &&
           (row.planned_list as Row[]).map((b, i) => (
             <div key={i} className="mt-1.5 border-l-2 border-[#C6DAF0] pl-2">
               <div className={cn('text-[12px] font-bold text-[#0B3D2E]', __WEB__ && '!text-[12.5px] !font-extrabold')}>{String(b.supplier_name || '')}</div>
               <div className="text-[11px] font-semibold text-[#33473E]">{String(b.bargain_no || '')}</div>
             </div>
           ))}
+        </>
+        )}
       </TableCell>
       {/* Loaded qty, payment and invoice all say the same thing when they are
           empty: this step has not happened yet. So an unfilled one steps back
@@ -1646,11 +1724,32 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
           __WEB__ && (Number(row.loaded_qty) > 0 ? '!text-[13.5px] !font-bold' : '!text-[13.5px] !text-[#A8B8AE]')
         )}
       >
-        {Number(row.loaded_qty) > 0 ? `${formatNum(row.loaded_qty)} ${row.uom}` : 'Not loaded'}
+        {Array.isArray(row.group_parts)
+          ? `${formatNum((row.group_parts as Row[]).reduce((t, p) => t + (Number(p.loaded_qty) || 0), 0))} ${row.uom}`
+          : Number(row.loaded_qty) > 0 ? `${formatNum(row.loaded_qty)} ${row.uom}` : 'Not loaded'}
       </TableCell>
       <TableCell>{row.payment_mode === 'pending' ? <span className={cn('text-muted-foreground', __WEB__ && '!text-[11px] !font-extrabold !text-[#A8B8AE]')}>Not decided</span> : row.payment_mode === 'supplier_finance' ? <Badge variant="warning" className={cn(__WEB__ && '!whitespace-nowrap !rounded-[2px] !border-0 !bg-[#FFEDD0] !px-2 !py-1 !text-[11px] !font-extrabold !tracking-[.03em] !text-[#8A5300]')}>Supplier financed</Badge> : <Badge variant="muted" className={cn(__WEB__ && '!whitespace-nowrap !rounded-[2px] !border-0 !bg-[#EAF0E9] !px-2 !py-1 !text-[11px] !font-extrabold !tracking-[.03em] !text-[#33473E]')}>Paid by us</Badge>}</TableCell>
       <TableCell className={cn(__WEB__ && (row.invoice_no ? '!whitespace-nowrap !text-[12.5px] !font-bold' : ''))}>
-        {tankerInvoices(row).length > 1 ? (
+        {Array.isArray(row.group_parts) && !openLorries.has(Number(row.id)) ? (
+          (() => {
+            const gp = row.group_parts as Row[]
+            const done = gp.filter((p) => p.invoice_no).length
+            return (
+              <span className={cn('whitespace-nowrap text-[12px] font-bold', done === gp.length ? 'text-[#0B6B45]' : done ? 'text-[#8A5300]' : 'text-[#A8B8AE]')}>
+                {done === 0 ? 'Not entered' : `${done} of ${gp.length} invoiced`}
+              </span>
+            )
+          })()
+        ) : Array.isArray(row.group_parts) ? (
+          <div className="grid gap-0.5">
+            {(row.group_parts as Row[]).map((p) => (
+              <div key={String(p.id)} className="whitespace-nowrap text-[12px]">
+                {p.invoice_no ? <b>{String(p.invoice_no)}</b> : <span className="text-[#A8B8AE]">Not entered</span>}{' '}
+                <span className="text-[10.5px] font-semibold text-muted-foreground">{String(p.supplier_name || '').split(' ')[0]}</span>
+              </div>
+            ))}
+          </div>
+        ) : tankerInvoices(row).length > 1 ? (
           // One lorry on several invoices: each with its share of the load.
           <div className="grid gap-0.5">
             {tankerInvoices(row).map((i) => (
@@ -1721,7 +1820,13 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
                 // as the row's one button without shouting over the data.
                 __WEB__ && '!h-[30px] !gap-1.5 !rounded-[3px] !border-[#BFE3CB] !bg-[#E9F5EE] !px-2.5 !text-[11.5px] !font-extrabold !tracking-[.02em] !text-[#0B6B45] hover:!bg-[#DCEFE4] hover:!text-[#0B3D2E]'
               )}
-              onClick={() => openTankerAction(row)}
+              onClick={() =>
+                openTankerAction(
+                  Array.isArray(row.group_parts)
+                    ? { ...row, loaded_qty: (row.group_parts as Row[]).reduce((t, p) => t + (Number(p.loaded_qty) || 0), 0) }
+                    : row
+                )
+              }
             >
               {__WEB__ && <ArrowRight className="h-4 w-4" />}
               {TANKER_LABEL[next]}
