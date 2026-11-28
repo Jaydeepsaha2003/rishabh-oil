@@ -816,22 +816,44 @@ export function GateEntry(): React.JSX.Element {
   const completed = rows.filter((r) => r.status !== 'pending')
 
   // Tankers that can still arrive: not emptied yet and no gate entry so far.
+  // ONE LORRY, ONE CHOICE: a shared lorry's parts (split_group) are one
+  // vehicle at the gate — offered once, as the lorry's own tanker, with every
+  // party and bargain on it and the whole load as the challan qty.
+  const lorryParts = useMemo(() => {
+    const m = new Map<number, Row[]>()
+    for (const t of tankers) {
+      const g = Number(t.split_group) || 0
+      if (!g) continue
+      if (!m.has(g)) m.set(g, [])
+      m.get(g)!.push(t)
+    }
+    return m
+  }, [tankers])
   const arrivable = useMemo(() => {
     const withEntry = new Set(rows.map((r) => Number(r.tanker_id)).filter((x) => x > 0))
     return tankers
       .filter((t) => t.status !== 'empty' && !withEntry.has(Number(t.id)))
+      .filter((t) => {
+        const g = Number(t.split_group) || 0
+        if (!g) return true
+        const parts = lorryParts.get(g) || []
+        // The lorry's own line only, and none of its parts already at the gate.
+        return Number(t.id) === g && !parts.some((p) => withEntry.has(Number(p.id)))
+      })
       .sort((a, b) => String(a.tanker_no).localeCompare(String(b.tanker_no)))
-  }, [tankers, rows])
+  }, [tankers, rows, lorryParts])
 
   function chooseTanker(id: string): void {
     const t = tankers.find((x) => String(x.id) === id)
+    const parts = t && Number(t.split_group) ? lorryParts.get(Number(t.split_group)) || [] : []
+    const loaded = parts.length ? parts.reduce((s0, x) => s0 + (Number(x.loaded_qty) || 0), 0) : Number(t?.loaded_qty) || 0
     setArrival((p) => ({
       ...p,
       tanker_id: id,
       tanker_no: t?.tanker_no || p.tanker_no,
       oil_type_id: t ? String(t.oil_type_id) : '',
       uom: t?.uom || 'MT',
-      dispatch_qty: t?.loaded_qty ? String(t.loaded_qty) : p.dispatch_qty
+      dispatch_qty: loaded ? String(Math.round(loaded * 1000) / 1000) : p.dispatch_qty
     }))
   }
 
@@ -2719,12 +2741,23 @@ export function GateEntry(): React.JSX.Element {
                         several tankers on the road at once against different
                         bargains, and the tanker number alone does not say which
                         one is arriving. */}
-                    {arrivable.map((t) => (
-                      <SelectItem key={t.id} value={String(t.id)}>
-                        {t.tanker_no} · {t.supplier_name}
-                        {t.bargain_no ? ` · ${t.bargain_no}` : ''}
-                      </SelectItem>
-                    ))}
+                    {arrivable.map((t) => {
+                      const parts = Number(t.split_group) ? lorryParts.get(Number(t.split_group)) || [] : []
+                      if (parts.length > 1) {
+                        const names = Array.from(new Set(parts.map((x) => String(x.supplier_name || '').split(' ')[0])))
+                        return (
+                          <SelectItem key={t.id} value={String(t.id)}>
+                            {t.tanker_no} · {names.join(' + ')} · shared lorry · {parts.length} bargains
+                          </SelectItem>
+                        )
+                      }
+                      return (
+                        <SelectItem key={t.id} value={String(t.id)}>
+                          {t.tanker_no} · {t.supplier_name}
+                          {t.bargain_no ? ` · ${t.bargain_no}` : ''}
+                        </SelectItem>
+                      )
+                    })}
                   </SelectContent>
                 </Select>
                 {/* And again once one is picked, because the closed field
@@ -2733,7 +2766,10 @@ export function GateEntry(): React.JSX.Element {
                 {(() => {
                   const t = tankers.find((x) => String(x.id) === String(arrival.tanker_id))
                   if (!t) return null
-                  const nos = [String(t.bargain_no || ''), String(t.extra_bargain_no || '')].filter(Boolean)
+                  const parts = Number(t.split_group) ? lorryParts.get(Number(t.split_group)) || [] : []
+                  const nos = parts.length > 1
+                    ? parts.map((x) => `${String(x.bargain_no || '')} (${String(x.supplier_name || '').split(' ')[0]})`)
+                    : [String(t.bargain_no || ''), String(t.extra_bargain_no || '')].filter(Boolean)
                   return (
                     <span className={cn('text-[10px] text-muted-foreground', __WEB__ && '!text-[11.5px] !font-semibold !text-[#33473E]')}>
                       {nos.length ? (
