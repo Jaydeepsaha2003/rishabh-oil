@@ -3341,6 +3341,19 @@ export async function runStartupTasks(): Promise<void> {
   // v2: also interest a repayment paid OVER its own days (B7's ₹56,653.28 on
   // 24-11), split FIFO over the NBFC's other bills — asked for Blacksoil only;
   // other NBFCs' small day-count differences are left for the user to decide.
+  // One debit that repaid several bills with one interest figure (V5 + V6,
+  // 27-11): the interest over the first bill's own days goes to the other bills
+  // of that same debit. Record only — no voucher changes.
+  await runOnce('bd_split_debit_interest_v1', async () => {
+    const { splitDebitInterest } = await import('./billDiscounting')
+    const reps = (await getClient().execute(`SELECT r.id FROM bd_repayments r
+        WHERE COALESCE(r.interest, 0) > 0.004 AND r.journal_entry_id IS NOT NULL
+          AND EXISTS (SELECT 1 FROM bd_repayments o WHERE o.journal_entry_id = r.journal_entry_id AND o.bd_id <> r.bd_id)`)).rows
+    for (const r of reps) {
+      const res = await splitDebitInterest(Number(r.id))
+      if (res.moved) console.log(`[bd] split-debit interest of repayment ${String(r.id)} shared: ${JSON.stringify(res.shares)}`)
+    }
+  }).catch((e) => console.error('[bd] split-debit interest failed:', e))
   await runOnce('bd_interest_auto_adjust_v2', async () => {
     const { adjustAllBdExcessInterest } = await import('./billDiscounting')
     const done = await adjustAllBdExcessInterest('BLACKSOIL%')

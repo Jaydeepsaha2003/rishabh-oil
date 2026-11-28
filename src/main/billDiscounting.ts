@@ -1251,6 +1251,7 @@ function earlyRefund(bd: Row, calc: { interestAmount: number }, reps: Row[], rec
 
 export async function listBd(filter?: Row): Promise<Row[]> {
   await ensureBdPostingFields()
+  await ensureBdAdjust()
   const where: string[] = ['bd.company_id = ?']
   const args: (string | number)[] = [getActiveCompanyId()]
   if (filter?.status) {
@@ -1319,17 +1320,24 @@ export async function listBd(filter?: Row): Promise<Row[]> {
                  -- …or a repayment that paid the interest with it (to its repay date).
                  NULLIF(MAX(COALESCE((SELECT MAX(ip.to_date) FROM bd_interest_payments ip WHERE ip.bd_id = bd.id), ''),
                             COALESCE((SELECT MAX(rr.repay_date) FROM bd_repayments rr
-                                       WHERE rr.bd_id = bd.id AND COALESCE(rr.interest, 0) > 0.004), '')), '') AS interest_paid_to,
+                                       WHERE rr.bd_id = bd.id AND COALESCE(rr.interest, 0) > 0.004), ''),
+                            COALESCE((SELECT MAX(substr(ia.on_date, 1, 10)) FROM bd_interest_adjustments ia WHERE ia.to_bd_id = bd.id
+                                       AND EXISTS (SELECT 1 FROM bd_repayments r2 WHERE r2.bd_id = bd.id AND substr(r2.repay_date, 1, 10) = substr(ia.on_date, 1, 10))), '')), '') AS interest_paid_to,
                  (SELECT MAX(rr.repay_date) FROM bd_repayments rr
                    WHERE rr.bd_id = bd.id) AS last_repay_date,
                  -- Interest paid WITH the repayments (net) and its TDS — the
                  -- one on the repayment, or worked off the gross for one
                  -- entered before TDS was asked (bdInterestWithRepayments).
-                 COALESCE((SELECT SUM(rr.interest) FROM bd_repayments rr WHERE rr.bd_id = bd.id), 0) AS rep_interest_net,
+                 -- …with interest set over from / to another bill (bd_interest_adjustments).
+                 COALESCE((SELECT SUM(rr.interest) FROM bd_repayments rr WHERE rr.bd_id = bd.id), 0)
+                   + COALESCE((SELECT SUM(ia.net) FROM bd_interest_adjustments ia WHERE ia.to_bd_id = bd.id), 0)
+                   - COALESCE((SELECT SUM(ia.net) FROM bd_interest_adjustments ia WHERE ia.from_bd_id = bd.id), 0) AS rep_interest_net,
                  COALESCE((SELECT SUM(CASE WHEN rr.tds_amount IS NOT NULL THEN rr.tds_amount
                                            WHEN COALESCE(rr.interest, 0) > 0 AND bd.tds_pct > 0 AND bd.tds_pct < 100
                                            THEN ROUND(rr.interest * bd.tds_pct / (100 - bd.tds_pct), 2) ELSE 0 END)
-                            FROM bd_repayments rr WHERE rr.bd_id = bd.id), 0) AS rep_interest_tds,
+                            FROM bd_repayments rr WHERE rr.bd_id = bd.id), 0)
+                   + COALESCE((SELECT SUM(ia.tds) FROM bd_interest_adjustments ia WHERE ia.to_bd_id = bd.id), 0)
+                   - COALESCE((SELECT SUM(ia.tds) FROM bd_interest_adjustments ia WHERE ia.from_bd_id = bd.id), 0) AS rep_interest_tds,
                  -- The later parts the NBFC paid the supplier (the first is on the bill).
                  COALESCE((SELECT SUM(pp.amount) FROM bd_party_payments pp WHERE pp.bd_id = bd.id), 0) AS party_parts_paid,
                  (SELECT COUNT(*) FROM bd_party_payments pp WHERE pp.bd_id = bd.id) AS party_parts_count
@@ -2077,6 +2085,7 @@ export async function repayBd(
   }
 
   const paid = round2(already + asked)
+  const splitInterestRep = interestPaid > 0.004 && others.length ? Number(insRep.lastInsertRowid || 0) : 0
   // The bill stays OPEN while anything is outstanding: the facility is still
   // live for the balance, and closing it early would hide it from every open
   // exposure figure on the page.
@@ -2094,6 +2103,10 @@ export async function repayBd(
     // The margin comes back into the account the repayment left from.
     await postBdMarginRelease(fresh, repayBank)
   }
+  // ONE DEBIT, SEVERAL BILLS, ONE INTEREST FIGURE (V5 + V6): the interest is
+  // booked on this bill; what is over this bill's own days is set over to the
+  // other bills of the same debit, each taking its own days' interest.
+  if (splitInterestRep) await splitDebitInterest(splitInterestRep)
   return { id, amount: asked, outstanding: left, closed }
   })
 }
@@ -2436,7 +2449,24 @@ async function bdInterestWithRepayments(bd: Row, from: string, to: string, rate:
             FROM bd_repayments WHERE bd_id = ? GROUP BY substr(repay_date, 1, 10) ORDER BY d`,
     args: [n(bd.id)]
   })
-  const days = r.rows as unknown as Row[]
+  const days = (r.rows as unknown as Row[]).map((x) => ({ ...x }))
+  // Interest set over to this bill on one of its own repayment days (a split
+  // debit: V6 takes its days from V5's figure), and set over from it, count on that day.
+  await ensureBdAdjust()
+  const adj = toPlain(
+    await getClient().execute({
+      sql: `SELECT substr(a.on_date, 1, 10) AS d, SUM(CASE WHEN a.to_bd_id = ? THEN a.net ELSE -a.net END) AS net,
+                   SUM(CASE WHEN a.to_bd_id = ? THEN a.tds ELSE -a.tds END) AS tds
+              FROM bd_interest_adjustments a WHERE a.to_bd_id = ? OR a.from_bd_id = ? GROUP BY substr(a.on_date, 1, 10)`,
+      args: [n(bd.id), n(bd.id), n(bd.id), n(bd.id)]
+    })
+  )
+  for (const a of adj) {
+    const x = days.find((y) => String(y.d) === String(a.d))
+    if (!x) continue
+    x.net = round2(n(x.net) + n(a.net))
+    x.tds = round2(n(x.tds) + n(a.tds))
+  }
   if (!days.some((x) => n(x.net) > 0.004)) return null
   const pct = n(bd.tds_pct)
   const tdsOn = (net: number): number => (pct > 0 && pct < 100 ? round2((net * pct) / (100 - pct)) : 0)
@@ -2588,7 +2618,7 @@ async function bdPaidStretches(bdId: number, bd: Row): Promise<Row[]> {
 // had already paid — while B5, under the same NBFC, was ₹21,028.63 short on
 // those very days. The money is the NBFC's either way; this records which
 // bill it is counted against. Record only: no voucher changes.
-async function ensureBdAdjust(): Promise<void> {
+export async function ensureBdAdjust(): Promise<void> {
   await getClient().execute(`CREATE TABLE IF NOT EXISTS bd_interest_adjustments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     repayment_id INTEGER NOT NULL,
@@ -2652,7 +2682,16 @@ export async function bdExcessInterest(bdId: number): Promise<Row[]> {
       : steps.length
         ? bdInterestParts(calc.interestBase, steps, f, t, n(bd.interest_pct), daysYear).gross
         : round2((calc.interestBase * n(bd.interest_pct) * (daysBetween(f, t) + 1)) / (100 * daysYear))
+  const shared = new Set(
+    toPlain(
+      await c.execute({
+        sql: `SELECT r.id FROM bd_repayments r WHERE r.bd_id = ? AND EXISTS (SELECT 1 FROM bd_repayments o WHERE o.journal_entry_id = r.journal_entry_id AND o.bd_id <> r.bd_id)`,
+        args: [n(bdId)]
+      })
+    ).map((x) => n(x.id))
+  )
   for (const r of reps) {
+    if (shared.has(n(r.id))) continue
     const on = String(r.repay_date).slice(0, 10)
     const gross = round2(n(r.interest) + n(r.tds_amount))
     const movedHere = round2(moved.filter((m) => n(m.repayment_id) === n(r.id)).reduce((t, m) => t + n(m.gross), 0))
@@ -2710,6 +2749,75 @@ export async function adjustBdExcessInterest(bdId: number): Promise<{ adjusted: 
     }
   }
   return { adjusted, gross: total }
+}
+
+/**
+ * ONE DEBIT, SEVERAL BILLS, ONE INTEREST FIGURE (V5 + V6, 27-11): the interest
+ * was booked on the first bill's repayment. It is shared over every bill of the
+ * debit by each bill's own days up to the repayment day, that day counted —
+ * the NBFC's own sum (V5 16-10→27-11 43 days + V6 17-10→27-11 42 days =
+ * ₹3,32,317.81, exactly what Vanik took). What the other bills take is set over
+ * to them (bd_interest_adjustments); anything set over from this repayment
+ * before is replaced. Record only — no voucher changes.
+ */
+export async function splitDebitInterest(repId: number): Promise<{ moved: number; shares: Row[] }> {
+  await ensureBdAdjust()
+  const c = getClient()
+  const rep = toPlain(await c.execute({ sql: 'SELECT * FROM bd_repayments WHERE id = ?', args: [n(repId)] }))[0]
+  if (!rep || n(rep.interest) <= 0.004 || !rep.journal_entry_id) return { moved: 0, shares: [] }
+  const sis = toPlain(
+    await c.execute({
+      sql: 'SELECT DISTINCT bd_id FROM bd_repayments WHERE journal_entry_id = ? AND bd_id <> ? ORDER BY bd_id',
+      args: [n(rep.journal_entry_id), n(rep.bd_id)]
+    })
+  ).map((x) => n(x.bd_id))
+  if (!sis.length) return { moved: 0, shares: [] }
+  const on = String(rep.repay_date).slice(0, 10)
+  const own = async (bdId: number): Promise<{ from: string; gross: number }> => {
+    const bd = await loadBd(bdId)
+    const rec = String(bd.payment_received_date || '').slice(0, 10)
+    if (!rec) return { from: on, gross: 0 }
+    const A = accrualStart(bd, rec)
+    // Days already paid: interest payments, and interest with an earlier repayment.
+    const spans = [
+      ...toPlain(await c.execute({ sql: 'SELECT from_date, to_date FROM bd_interest_payments WHERE bd_id = ?', args: [bdId] })),
+      ...toPlain(
+        await c.execute({
+          sql: `SELECT ? AS from_date, repay_date AS to_date FROM bd_repayments
+                 WHERE bd_id = ? AND id <> ? AND COALESCE(interest, 0) > 0.004 AND substr(repay_date, 1, 10) < ?`,
+          args: [A, bdId, n(repId), on]
+        })
+      )
+    ]
+    const from = firstUnpaid(spans, A).from
+    const steps = (await principalRepaidByDate(bdId)).filter((x) => x.date < on)
+    return { from, gross: bdInterestParts(bdCalc(bd).interestBase, steps, from, on, n(bd.interest_pct), n(bd.days_year) || 360).gross }
+  }
+  const bills = [n(rep.bd_id), ...sis]
+  const w = await Promise.all(bills.map(own))
+  const W = w.reduce((t, x) => t + x.gross, 0)
+  if (W <= 0.004) return { moved: 0, shares: [] }
+  const net = round2(n(rep.interest))
+  const tds = round2(n(rep.tds_amount))
+  const gross = round2(net + tds)
+  await c.execute({ sql: 'DELETE FROM bd_interest_adjustments WHERE repayment_id = ?', args: [n(repId)] })
+  const shares: Row[] = []
+  let moved = 0
+  let tdsLeft = tds
+  for (let i = 1; i < bills.length; i++) {
+    const g = round2((gross * w[i].gross) / W)
+    const t = round2(gross > 0 ? (tds * g) / gross : 0)
+    tdsLeft = round2(tdsLeft - t)
+    if (g <= 0.004) continue
+    await c.execute({
+      sql: 'INSERT INTO bd_interest_adjustments (repayment_id, from_bd_id, to_bd_id, on_date, gross, tds, net, rest_from, rest_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      args: [n(repId), n(rep.bd_id), bills[i], on, g, t, round2(g - t), w[i].from, on]
+    })
+    moved = round2(moved + g)
+    shares.push({ bd_id: bills[i], gross: g, tds: t, own: w[i].gross })
+  }
+  shares.unshift({ bd_id: bills[0], gross: round2(gross - moved), tds: tdsLeft, own: w[0].gross })
+  return { moved, shares }
 }
 
 /** Take an adjustment back — the interest counts on the bill it was paid with again. */

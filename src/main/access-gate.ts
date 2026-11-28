@@ -134,6 +134,15 @@ const READ_OPS = new Set([
 
 // What the operation amounts to. Anything that changes an existing row counts as
 // an edit, so advancing a stage or adjusting a quantity is gated like one.
+async function bdReceivedAlready(id: number): Promise<boolean> {
+  if (!id) return false
+  try {
+    return !!(await getClient().execute({ sql: 'SELECT payment_received_date AS d FROM bill_discountings WHERE id = ?', args: [id] })).rows[0]?.d
+  } catch {
+    return false
+  }
+}
+
 function actionFor(op: string): Action {
   if (op === 'create' || op === 'record' || op === 'issue' || op === 'transfer' || op === 'createInvoice') return 'create'
   if (op === 'delete' || op === 'remove' || op === 'removeInvoice' || op === 'deleteEntry' || op === 'deleteTransfer' ||
@@ -661,11 +670,21 @@ export async function assertAllowed(channel: string, args: unknown): Promise<voi
         : ns === 'lc' && op === 'deleteRepayment'
           ? { table: 'lc_repayments', id: Number((args as Row)?.id) || 0 }
           : null
-  if (newRepay) action = 'create'
+  // THE BILL'S OTHER NEW ENTRIES are new entries too (asked 2026-11-28): the
+  // NBFC's money landing (Mark received, first time only — changing the date
+  // after is an edit), a part released, a part paid to the party, a payment in,
+  // an interest payment, a refund receipt.
+  const a0 = (args || {}) as Row
+  const newBdEntry =
+    ns === 'bd' &&
+    (['receivePart', 'payParty', 'paymentIn', 'payInterest', 'payInterestUpto', 'payCumulativeInterest', 'createRefundReceipt'].includes(op) ||
+      (op === 'markReceived' && !(await bdReceivedAlready(Number(a0.id) || 0))))
+  if (newRepay || newBdEntry) action = 'create'
   // The row's own date decides the read-only window; without one, only the
   // right itself is checked.
   let entryDate: unknown
   if (newRepay) entryDate = va.repay_date || va.date || todayISO()
+  if (newBdEntry) entryDate = va.date || va.pay_date || va.paid_date || va.receipt_date || a0.date || a0.pay_date || a0.paid_date || a0.to_date || todayISO()
   if (repayRow && repayRow.id) {
     try {
       entryDate = (await getClient().execute({ sql: `SELECT repay_date AS d FROM ${repayRow.table} WHERE id = ? LIMIT 1`, args: [repayRow.id] })).rows[0]?.d
