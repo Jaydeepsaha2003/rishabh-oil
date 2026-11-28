@@ -21134,6 +21134,7 @@ var init_access_gate = __esm({
       "customers",
       "returns",
       "unattributedReturns",
+      "mncHoldings",
       // The rate card's own reads: which packs a customer is priced for, and how
       // many customers a pack is priced for. Both are lookups — without them here
       // every unknown op reads as an edit, and merely OPENING the card would need
@@ -22437,10 +22438,12 @@ __export(consignment_exports, {
   listOpeningLots: () => listOpeningLots,
   listPendingGateArrivals: () => listPendingGateArrivals,
   listUnbookedLots: () => listUnbookedLots,
+  mncHoldings: () => mncHoldings,
   planConsignmentDraw: () => planConsignmentDraw,
   releaseConsignmentLots: () => releaseConsignmentLots,
   renameConsignmentLot: () => renameConsignmentLot,
   saveOpeningStock: () => saveOpeningStock,
+  syncMncGateOut: () => syncMncGateOut,
   tankerKin: () => tankerKin,
   toLotPicks: () => toLotPicks,
   unlinkConsignmentDraw: () => unlinkConsignmentDraw,
@@ -22649,8 +22652,53 @@ async function createConsignmentOut(v) {
   });
   return { id: Number(res.lastInsertRowid) };
 }
+async function mncHoldings() {
+  await ensureOuts();
+  const cid = getActiveCompanyId();
+  const pairs = toPlain19(
+    await getClient().execute({
+      sql: `SELECT DISTINCT cs.supplier_id, cs.product_id, s.name AS supplier_name, p.name AS product_name, COALESCE(p.code, p.name) AS product_code
+              FROM consignment_stock cs LEFT JOIN suppliers s ON s.id = cs.supplier_id LEFT JOIN products p ON p.id = cs.product_id
+             WHERE cs.company_id = ?`,
+      args: [cid]
+    })
+  );
+  const out = [];
+  for (const r of pairs) {
+    const left = await consignmentAvailable(n24(r.supplier_id), n24(r.product_id), cid);
+    if (left > 5e-4) out.push({ ...r, left: Math.round(left * 1e3) / 1e3 });
+  }
+  return out.sort((a, b) => String(a.supplier_name).localeCompare(String(b.supplier_name)));
+}
+async function syncMncGateOut(entryId) {
+  await ensureOuts();
+  const c = getClient();
+  const e = toPlain19(await c.execute({ sql: "SELECT * FROM gate_entries WHERE id = ?", args: [n24(entryId)] }))[0];
+  const linked = toPlain19(await c.execute({ sql: "SELECT id FROM consignment_outs WHERE gate_entry_id = ?", args: [n24(entryId)] }))[0];
+  const live = e && String(e.direction) === "out" && n24(e.is_direct_mnc) === 1 && n24(e.supplier_id) && n24(e.oil_type_id) && String(e.status) === "completed" && !e.rejected_at && n24(e.received_qty) > 0;
+  if (!live) {
+    if (linked) await c.execute({ sql: "DELETE FROM consignment_outs WHERE id = ?", args: [n24(linked.id)] });
+    return;
+  }
+  const qty = Math.round(n24(e.received_qty) * 1e3) / 1e3;
+  const date = String(e.out_date || e.entry_date || todayISO()).slice(0, 10);
+  const note = `Gate out ${String(e.gate_entry_no || "")} \xB7 ${String(e.tanker_no || "")}`.trim();
+  if (linked) {
+    await c.execute({
+      sql: "UPDATE consignment_outs SET supplier_id = ?, product_id = ?, out_date = ?, qty = ?, uom = ?, note = ? WHERE id = ?",
+      args: [n24(e.supplier_id), n24(e.oil_type_id), date, qty, String(e.uom || "MT"), note, n24(linked.id)]
+    });
+  } else {
+    await c.execute({
+      sql: "INSERT INTO consignment_outs (company_id, supplier_id, product_id, out_date, qty, uom, note, gate_entry_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      args: [getActiveCompanyId(), n24(e.supplier_id), n24(e.oil_type_id), date, qty, String(e.uom || "MT"), note, n24(entryId)]
+    });
+  }
+}
 async function deleteConsignmentOut(id) {
   await ensureOuts();
+  const g = (await getClient().execute({ sql: "SELECT gate_entry_id FROM consignment_outs WHERE id = ?", args: [n24(id)] })).rows[0];
+  if (g && g.gate_entry_id) throw new Error("This stock out came from a Gate Out \u2014 delete or correct that gate entry instead");
   await getClient().execute({ sql: "DELETE FROM consignment_outs WHERE id = ? AND company_id = ?", args: [n24(id), getActiveCompanyId()] });
   return { id: n24(id) };
 }
@@ -47222,7 +47270,7 @@ async function recordAudit(channel, args, result) {
   );
 }
 function registerIpc() {
-  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:splitNames$|^journal:mergePreview$|^bd:splits$|^notes:relinkCandidates$|^hostinger:status$|^hostinger:plans$|^hostinger:alert$|^journal:releasePreview$|^journal:provisional$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:subtypes$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:commission$|^lc:commissionCandidates$|^lc:refund$|^lc:refundCandidates$|^journal:accountNames$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:salesInvoices$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^bd:receiptParts$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^tbill:rcmRegister$|^production:report$|^production:mix$|^repairs:splitTanker:list$|^vouchers:cashflow$|^repairs:paisa:list$|^tallyNotes:(preview|salesCheck|salesPreview|registerCheck|registerPreview|health|batches|companyBanks|bankSuggest|bankCheck|bankPreview|drafts|bankBooks|bankBook|lineNotes)$|^sales:(tdsPreview|tdsMap|cancelledNos|shortageNotes|shortageNoteMap)$|^orders:(dnNotes|dnNoteMap)$|^suppliers:tdsRecalc$|^(bd|lc):refund(Dues|Totals)$/;
+  const READONLY = /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:splitNames$|^journal:mergePreview$|^bd:splits$|^notes:relinkCandidates$|^hostinger:status$|^hostinger:plans$|^hostinger:alert$|^journal:releasePreview$|^journal:provisional$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:subtypes$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:mncHoldings$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:commission$|^lc:commissionCandidates$|^lc:refund$|^lc:refundCandidates$|^journal:accountNames$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:salesInvoices$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^bd:receiptParts$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^tbill:rcmRegister$|^production:report$|^production:mix$|^repairs:splitTanker:list$|^vouchers:cashflow$|^repairs:paisa:list$|^tallyNotes:(preview|salesCheck|salesPreview|registerCheck|registerPreview|health|batches|companyBanks|bankSuggest|bankCheck|bankPreview|drafts|bankBooks|bankBook|lineNotes)$|^sales:(tdsPreview|tdsMap|cancelledNos|shortageNotes|shortageNoteMap)$|^orders:(dnNotes|dnNoteMap)$|^suppliers:tdsRecalc$|^(bd|lc):refund(Dues|Totals)$/;
   const AUDIT_SKIP = /* @__PURE__ */ new Set(["config:get", "config:save", "session:setUser", "hostinger:setToken"]);
   const handle = (channel, fn) => {
     ipcMain.handle(channel, async (e, args) => {
@@ -48252,14 +48300,19 @@ function registerIpc() {
     "gate:forRecord",
     (_e, args) => gateEntriesFor(args)
   );
-  handle("gate:create", (_e, { values }) => createGateEntry(values));
-  handle(
-    "gate:update",
-    (_e, { id, values }) => updateGateEntry(id, values)
-  );
+  const mncSync = async (id, r) => {
+    await (await Promise.resolve().then(() => (init_consignment(), consignment_exports))).syncMncGateOut(id);
+    return r;
+  };
+  handle("gate:mncHoldings", async () => (await Promise.resolve().then(() => (init_consignment(), consignment_exports))).mncHoldings());
+  handle("gate:create", async (_e, { values }) => {
+    const r = await createGateEntry(values);
+    return mncSync(r.id, r);
+  });
+  handle("gate:update", async (_e, { id, values }) => mncSync(id, await updateGateEntry(id, values)));
   handle(
     "gate:complete",
-    (_e, { id, gross, tare }) => completeGateEntry(id, gross, tare)
+    async (_e, { id, gross, tare }) => mncSync(id, await completeGateEntry(id, gross, tare))
   );
   handle(
     "gate:weights",
@@ -48272,12 +48325,15 @@ function registerIpc() {
       invoiceGroup,
       outDate,
       outTime
-    }) => saveGateWeights(id, gross, tare, awaitingGrossOut, dispatchQty, invoiceGroup, outDate, outTime)
+    }) => saveGateWeights(id, gross, tare, awaitingGrossOut, dispatchQty, invoiceGroup, outDate, outTime).then((r) => mncSync(id, r))
   );
-  handle("gate:skipWeighment", (_e, { id }) => skipGateWeighment(id));
-  handle("gate:delete", (_e, { id }) => deleteGateEntry(id));
-  handle("gate:reject", (_e, { id, reason }) => rejectGateEntry(id, reason));
-  handle("gate:unreject", (_e, { id }) => unrejectGateEntry(id));
+  handle("gate:skipWeighment", async (_e, { id }) => mncSync(id, await skipGateWeighment(id)));
+  handle("gate:delete", async (_e, { id }) => {
+    const r = await deleteGateEntry(id);
+    return mncSync(id, r);
+  });
+  handle("gate:reject", async (_e, { id, reason }) => mncSync(id, await rejectGateEntry(id, reason)));
+  handle("gate:unreject", async (_e, { id }) => mncSync(id, await unrejectGateEntry(id)));
   handle("lc:list", (_e, args) => listLCs(args?.companyId));
   handle("treasury:alerts", (_e, a) => treasuryAlerts({ all: !!a?.all }));
   handle("treasury:paymentTracker", () => listPaymentTracker());
