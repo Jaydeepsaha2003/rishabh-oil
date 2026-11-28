@@ -1122,6 +1122,11 @@ export async function listBdSalesInvoices(bdId: number): Promise<Row[]> {
 // rewritten on a guess, and it is not locked against edits either.
 async function validateBd(v: Row, cur?: Row): Promise<void> {
   await ensureBdPostingFields()
+  // The party's invoice no. is required (asked 2026-11-28): on every new bill,
+  // and on an edit that carries the field.
+  if ((!cur || 'party_invoice_no' in v) && !String(v.party_invoice_no ?? '').trim()) {
+    throw new Error("Enter the party's invoice no. this bill is drawn against")
+  }
   const route = String(v.disbursement_route || '')
   const legacy = !!cur && String(cur.disbursement_route || 'unconfirmed') === 'unconfirmed' && route === 'unconfirmed'
   if (!legacy && !['bank', 'supplier'].includes(route)) throw new Error('Choose who receives the NBFC disbursement')

@@ -2052,6 +2052,10 @@ export function BillDiscounting({
       toast.error('Enter the BD no — every voucher this bill posts is numbered with it')
       return
     }
+    if (!String(form.party_invoice_no ?? '').trim()) {
+      toast.error("Enter the party's invoice no. this bill is drawn against")
+      return
+    }
     setSaving(true)
     try {
       const payload: Row = {
@@ -3940,11 +3944,21 @@ Its bank voucher is removed too.`)) return
                         <TableCell className={cn('whitespace-nowrap', __WEB__ && cn(BD_RULE, BD_W, '!whitespace-normal'))}>
                           {/* Several parties on one bill: named in full, with
                               the count, rather than showing only the first. */}
+                          {/* INVOICE NO. OUTSIDE THE PARTY'S SERIES: the whole party name in red,
+                              to the admin; the number itself is on hover. */}
                           <div
                             className={cn(
                               __WEB__ &&
                                 'max-w-[260px] text-[13px] font-semibold leading-[1.32] text-[#0A1F17] [text-wrap:pretty]'
                             )}
+                            style={iAmAdmin && r.party_invoice_ok === false ? { color: '#B3261E' } : undefined}
+                            title={
+                              iAmAdmin && r.party_invoice_ok === false
+                                ? `Invoice ${String(r.party_invoice_no)} is not in ${String(r.party_name || 'the party')}'s usual series${r.party_series ? ` (${String(r.party_series)}…)` : ''} — check it`
+                                : r.party_invoice_no
+                                  ? `Invoice ${String(r.party_invoice_no)}`
+                                  : undefined
+                            }
                           >
                             {n(r.party_count) > 1 ? (
                               <span title={String(r.party_names)}>
@@ -3971,22 +3985,6 @@ Its bank voucher is removed too.`)) return
                               word — trading being the bill with a round trip
                               behind it, money going out to the NBFC and coming
                               back from a customer. */}
-                          {/* The party's invoice no. typed on the bill — red to the admin
-                              when it is outside the party's usual series. */}
-                          {!!String(r.party_invoice_no || '').trim() && (
-                            <div
-                              className="mt-0.5 font-mono text-[11px] font-bold"
-                              style={{ color: iAmAdmin && r.party_invoice_ok === false ? '#B3261E' : '#33473E' }}
-                              title={
-                                r.party_invoice_ok === false
-                                  ? `Not in ${String(r.party_name || 'the party')}'s usual series${r.party_series ? ` (${String(r.party_series)}…)` : ''} — check it`
-                                  : 'Invoice no. on the bill'
-                              }
-                            >
-                              Inv {String(r.party_invoice_no)}
-                              {iAmAdmin && r.party_invoice_ok === false && <span className="ml-1 rounded-[3px] bg-[#FDECEA] px-1 text-[9.5px] uppercase">not {String(r.party_series || 'its series')}</span>}
-                            </div>
-                          )}
                           <div className="mt-0.5">
                             {String(r.purpose) === 'trading' ? (
                               <span
@@ -5182,8 +5180,8 @@ Its bank voucher is removed too.`)) return
                       shown in red to the admin. */}
                   <div className="flex flex-col gap-1.5">
                     <Label className="flex items-center gap-1">
-                      Invoice no.
-                      <InfoTip text="The party's invoice this bill is drawn against. A number outside the party's usual series is still saved, and shown in red on the register." />
+                      Invoice no. *
+                      <InfoTip text="Required — the party's invoice this bill is drawn against. A number outside the party's usual series is still saved, and the party's name shows in red on the register (admin)." />
                     </Label>
                     <Input
                       value={String(form.party_invoice_no ?? '')}
