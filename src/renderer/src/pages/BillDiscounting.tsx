@@ -2146,12 +2146,20 @@ export function BillDiscounting({
   const principalFromDebit = debitTotalTyped
     ? round2(Math.max(0, n(repayForm.debit_total) - n(repayForm.interest) - penaltyAmt - chargesTotal))
     : null
+  // A DEBIT THAT ALSO CLEARS ANOTHER BILL (V5's ₹2,05,99,086.03 taking V6's
+  // ₹65,00,000 too): then the figure sent is the whole debit — the way the
+  // backend reads a repayment over the bill — and the interest, charges and the
+  // other bill account for everything over this bill. Sent as the principal
+  // instead, the interest was taken off twice and read "₹2,99,086.03
+  // over-allocated" on a debit that added up exactly.
+  const debitSpills = principalFromDebit != null && repayRow != null && (principalFromDebit - dueOn(repayRow) > 0.004 || alsoTotal > 0.004)
+  const amountFromDebit = principalFromDebit == null ? null : debitSpills ? round2(n(repayForm.debit_total)) : principalFromDebit
   useEffect(() => {
-    if (principalFromDebit == null) return
-    if (Math.abs(round2(n(repayForm.amount)) - principalFromDebit) < 0.005 && String(repayForm.amount ?? '') !== '') return
-    setRepayForm((p) => ({ ...p, amount: String(principalFromDebit) }))
+    if (amountFromDebit == null) return
+    if (Math.abs(round2(n(repayForm.amount)) - amountFromDebit) < 0.005 && String(repayForm.amount ?? '') !== '') return
+    setRepayForm((p) => ({ ...p, amount: String(amountFromDebit) }))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [principalFromDebit])
+  }, [amountFromDebit])
   const repayTds =
     String(repayForm.tds_amount ?? '').trim() === ''
       ? // The interest typed is what was paid, net of TDS: gross = net / (1 - TDS%).
@@ -7354,7 +7362,7 @@ Its bank voucher is removed too.`)) return
                           {chargesTotal > 0 && line('Less: bank charges', chargesTotal, '− ', 'text-[#8C2F26]')}
                           <div className="mt-1 flex items-baseline justify-between gap-3 border-t border-[#C6DAF0] pt-1.5">
                             <span className="text-[12.5px] font-extrabold text-[#0A1F17]">Principal repaid against {bdNo}</span>
-                            <span className="text-[16px] font-extrabold tabular-nums text-[#0B6B45]">{formatINR(principalFromDebit ?? 0)}</span>
+                            <span className="text-[16px] font-extrabold tabular-nums text-[#0B6B45]">{formatINR(Math.min(principalFromDebit ?? 0, due))}</span>
                           </div>
                           {(principalFromDebit ?? 0) > 0.004 && (
                             <div className="mt-0.5 flex items-baseline justify-between gap-3">
