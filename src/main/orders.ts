@@ -2784,6 +2784,29 @@ export async function revertPurchaseTanker(id: number): Promise<{ id: number; st
   // Only the very first stage has nowhere to go.
   if (current <= 0) throw new Error('Already at the supplier factory — nothing to undo')
   const prev = TANKER_STAGES[current - 1]
+  // A lorry carrying several bargains' parts goes back as one. Undoing the
+  // loading itself takes the other parts away (they were made by it).
+  if (n(tanker.split_group)) {
+    const g = n(tanker.split_group)
+    const parts = toPlain(await c.execute({ sql: 'SELECT id, order_id FROM purchase_tankers WHERE split_group = ? ORDER BY id', args: [g] }))
+    if (String(tanker.status) === 'loaded') {
+      if (parts.some((p) => n(p.id) !== g && p.order_id)) throw new Error('A part of this tanker is already on a purchase invoice — remove it from the invoice first')
+      await c.execute({ sql: 'DELETE FROM purchase_tankers WHERE split_group = ? AND id <> ?', args: [g, g] })
+      await c.execute({ sql: 'UPDATE purchase_tankers SET split_group = NULL WHERE id = ?', args: [g] })
+    } else {
+      for (const p of parts) if (n(p.id) !== n(id)) await revertPurchaseTanker0(n(p.id))
+    }
+  }
+  return revertPurchaseTanker0(id)
+}
+
+async function revertPurchaseTanker0(id: number): Promise<{ id: number; status: string }> {
+  const c = getClient()
+  const tanker = toPlain(await c.execute({ sql: 'SELECT * FROM purchase_tankers WHERE id = ?', args: [id] }))[0]
+  if (!tanker) throw new Error('Tanker not found')
+  const current = TANKER_STAGES.indexOf(String(tanker.status))
+  if (current <= 0) throw new Error('Already at the supplier factory — nothing to undo')
+  const prev = TANKER_STAGES[current - 1]
   const dateCol: Record<string, string> = {
     transit: 'transit_date',
     outside_factory: 'outside_factory_date',
@@ -3070,6 +3093,38 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
   const res = await c.execute({ sql: 'SELECT * FROM purchase_tankers WHERE id = ?', args: [id] })
   if (!res.rows.length) throw new Error('Tanker not found')
   const tanker = toPlain(res)[0]
+  // ONE LORRY CARRYING SEVERAL BARGAINS' PARTS: a stage is the lorry's, so every
+  // part moves with it. The received qty is shared out in proportion to what
+  // each part loaded, and the gate is checked once, for the lorry.
+  if (n(tanker.split_group) && !data._part) {
+    const parts = toPlain(
+      await c.execute({ sql: 'SELECT id, loaded_qty FROM purchase_tankers WHERE split_group = ? ORDER BY id', args: [n(tanker.split_group)] })
+    )
+    let shares: number[] = parts.map(() => n(data.received_qty))
+    if (toStatus === 'empty') {
+      const total = n(data.received_qty)
+      const loaded = parts.reduce((t, p) => t + n(p.loaded_qty), 0)
+      if (total <= 0 || total > loaded + 1e-6) throw new Error('Enter a valid empty quantity')
+      // The gate may have weighed the lorry against any of its parts.
+      const gates = (await Promise.all(parts.map((p) => tankerGateReceived(n(p.id))))).filter((g): g is number => g != null)
+      const gateQty = gates.length ? gates.reduce((t, g) => t + g, 0) : null
+      if (gateQty == null) throw new Error('No gate entry found for this tanker. Record the gate receipt first.')
+      if (Math.abs(gateQty - total) > GATE_MATCH_BUFFER) {
+        throw new Error(`Received qty (${total}) is more than ${GATE_MATCH_BUFFER} MT away from the gate received qty (${gateQty}) for this tanker.`)
+      }
+      let left = total
+      shares = parts.map((p, i) => {
+        if (i === parts.length - 1) return Math.round(left * 1000) / 1000
+        const s = Math.round(((total * n(p.loaded_qty)) / loaded) * 1000) / 1000
+        left -= s
+        return s
+      })
+    }
+    for (let i = 0; i < parts.length; i++) {
+      await advancePurchaseTanker(n(parts[i].id), toStatus, { ...data, received_qty: shares[i], _part: true })
+    }
+    return { id }
+  }
   const current = TANKER_STAGES.indexOf(String(tanker.status))
   const target = TANKER_STAGES.indexOf(toStatus)
   if (target !== current + 1) throw new Error('That is not the next tanker stage')
@@ -3084,8 +3139,31 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
   })
 
   if (toStatus === 'loaded') {
-    const qty = n(data.loaded_qty)
-    if (qty <= 0) throw new Error('Enter the actual loaded quantity')
+    // SPLIT ACROSS BARGAINS (any supplier): the other parts come off the load;
+    // this tanker keeps the rest on its own bargain.
+    const splitParts = (Array.isArray(data.split_parts) ? (data.split_parts as Row[]) : [])
+      .map((p) => ({ bargain_id: n(p.bargain_id), qty: Math.round(n(p.qty) * 1000) / 1000 }))
+      .filter((p) => p.bargain_id && p.qty > 0)
+    const qty = Math.round((n(data.loaded_qty) - splitParts.reduce((t, p) => t + p.qty, 0)) * 1000) / 1000
+    if (qty <= 0) throw new Error(splitParts.length ? 'The parts on other bargains take the whole load — leave some on this bargain' : 'Enter the actual loaded quantity')
+    // Every part's bargain checked before anything is written.
+    const partBargains = new Map<number, Row>()
+    for (const p of splitParts) {
+      const b = toPlain(
+        await c.execute({
+          sql: `SELECT b.id, b.supplier_id, b.oil_type_id, b.uom, b.bargain_no,
+                  b.qty
+                    - COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id), 0)
+                    - COALESCE((SELECT SUM(extra_qty) FROM purchase_tankers WHERE extra_bargain_id = b.id), 0)
+                    - COALESCE((SELECT SUM(ordered_qty) FROM orders WHERE bargain_id = b.id AND is_consignment = 1), 0) AS balance
+                FROM bargains b WHERE b.id = ?`,
+          args: [p.bargain_id]
+        })
+      )[0]
+      if (!b) throw new Error('A bargain picked for a part was not found')
+      if (p.qty > n(b.balance) + 1e-6) throw new Error(`${String(b.bargain_no)} has only ${n(b.balance).toFixed(3)} left for its ${p.qty.toFixed(3)} part`)
+      partBargains.set(p.bargain_id, b)
+    }
     // Tanker number is mandatory at loading (it may have been left blank when the
     // tanker was sent to the supplier). Take the value entered now, else keep any
     // existing one; blank is not allowed past this stage.
@@ -3094,6 +3172,7 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
     // The bargain may be switched at loading time (defaults to the one chosen
     // when the tanker was sent). Balance is validated against the final choice.
     const bargainId = data.bargain_id ? n(data.bargain_id) : n(tanker.bargain_id)
+    if (splitParts.some((p) => p.bargain_id === bargainId)) throw new Error("A part can't go on this tanker's own bargain — change the loaded qty instead")
     const balance = await c.execute({
       sql: `SELECT b.qty
               - COALESCE((SELECT SUM(loaded_qty - COALESCE(extra_qty, 0)) FROM purchase_tankers WHERE bargain_id = b.id AND id != ?), 0)
@@ -3200,6 +3279,30 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
         id
       ]
     })
+    if (splitParts.length) {
+      for (const p of splitParts) {
+        const b = partBargains.get(p.bargain_id)!
+        await c.execute({
+          sql: `INSERT INTO purchase_tankers (tanker_no, bargain_id, supplier_id, oil_type_id, loaded_date, loaded_qty, uom, payment_mode, status, source_id, company_id, condition, split_group)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'loaded', ?, ?, ?, ?)`,
+          args: [
+            tankerNo,
+            p.bargain_id,
+            n(b.supplier_id),
+            n(b.oil_type_id),
+            data.loaded_date || null,
+            p.qty,
+            String(b.uom || tanker.uom || 'MT'),
+            data.payment_mode === 'supplier_finance' ? 'supplier_finance' : 'paid_by_us',
+            loadSourceId,
+            tanker.company_id ?? null,
+            tanker.condition ?? null,
+            id
+          ]
+        })
+      }
+      await c.execute({ sql: 'UPDATE purchase_tankers SET split_group = ? WHERE id = ?', args: [id, id] })
+    }
   } else if (toStatus === 'transit') {
     // Keep what loading captured when this step leaves the field alone —
     // reading a blank as "no source" silently discarded it.
@@ -3279,7 +3382,7 @@ export async function advancePurchaseTanker(id: number, toStatus: string, data: 
     if (receivedQty <= 0 || receivedQty > n(tanker.loaded_qty) + 1e-6) throw new Error('Enter a valid empty quantity')
     // Cross-check against the gate-recorded received quantity for this tanker,
     // allowing a 1 MT operational buffer between weighbridge and receipt.
-    const gateQty = await tankerGateReceived(id)
+    const gateQty = data._part ? receivedQty : await tankerGateReceived(id)
     if (gateQty == null) {
       throw new Error('No gate entry found for this tanker. Record the gate receipt first.')
     }

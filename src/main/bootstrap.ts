@@ -3581,6 +3581,10 @@ const REQUIRED_COLUMNS: { table: string; column: string; type: string }[] = [
   { table: 'transporter_bills', column: 'tds_ledger', type: 'TEXT' },
   // The party's invoice no. a bill discounting is drawn against (typed).
   { table: 'bill_discountings', column: 'party_invoice_no', type: 'TEXT' },
+  // ONE LORRY, SEVERAL BARGAINS (any supplier): one tanker record per bargain
+  // part, all carrying the first part's id here; they move stage by stage
+  // together (orders.ts advancePurchaseTanker).
+  { table: 'purchase_tankers', column: 'split_group', type: 'INTEGER' },
   // A note typed on Mark received — kept on the bill, carried on its voucher.
   { table: 'bill_discountings', column: 'received_note', type: 'TEXT' },
   { table: 'bd_repayments', column: 'tds_ledger', type: 'TEXT' },
