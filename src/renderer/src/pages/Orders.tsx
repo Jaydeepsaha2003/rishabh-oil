@@ -2196,25 +2196,33 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
   // SEVERAL SUPPLIERS: tapping a supplier adds / removes it. The first one picked
   // gives every tanker its oldest bargain; the others' bargains can be named
   // per tanker as sharing the lorry.
+  // SEVERAL SUPPLIERS = ONE LORRY CARRYING SEVERAL BARGAINS (the user's rule):
+  // every tanker gets one bargain per picked supplier — that supplier's oldest
+  // open one — each changeable or removable; dropping a supplier drops its lines.
+  function oldestOpen(supplierId: string, oilPick: unknown = loadingForm.oil_pick): Row | undefined {
+    const c = routeBargains({ oil_pick: oilPick, supplier_pick: supplierId })
+    return c.find((b) => Number(b.balance_qty) > 0.005) || c[0]
+  }
+  function fillLorry(row: Row, sups: string[]): Row {
+    const supOf = (id: unknown): string => String(bargains.find((x) => String(x.id) === String(id))?.supplier_id ?? '')
+    let ids = [row.bargain_id, ...((row.planned_parts as string[]) || [])].map((x) => String(x || '')).filter((id) => id && sups.includes(supOf(id)))
+    for (const sp of sups) {
+      if (ids.some((id) => supOf(id) === sp)) continue
+      const b = oldestOpen(sp)
+      if (b) ids.push(String(b.id))
+    }
+    ids = Array.from(new Set(ids))
+    const main = bargains.find((x) => String(x.id) === ids[0])
+    if (!main) return { ...row, bargain_id: '', supplier_name: '', planned_parts: [] }
+    return { ...row, ...(String(main.id) === String(row.bargain_id) ? {} : bargainDefaults(main)), planned_parts: ids.slice(1) }
+  }
   function pickSupplier(supplierId: string): void {
     const cur = (Array.isArray(loadingForm.supplier_picks) ? (loadingForm.supplier_picks as string[]) : []).slice()
     const next = cur.includes(supplierId) ? cur.filter((x) => x !== supplierId) : [...cur, supplierId]
     const first = next[0] || ''
-    const candidates = first ? routeBargains({ oil_pick: loadingForm.oil_pick, supplier_pick: first }) : []
-    const pick = candidates.find((b) => Number(b.balance_qty) > 0.005) || candidates[0]
+    const pick = first ? oldestOpen(first) : undefined
     setLoadingForm((p) => ({ ...p, supplier_picks: next, supplier_pick: first, auto_bargain_id: pick ? String(pick.id) : '' }))
-    setLoadingRows((current) =>
-      current.map((row) => {
-        // A row on a supplier still picked keeps its bargain; the rest take the first supplier's oldest.
-        const keep = row.bargain_id && next.includes(String(row.supplier_id))
-        const base = keep ? row : pick ? { ...row, ...bargainDefaults(pick) } : { ...row, bargain_id: '', supplier_name: '' }
-        const parts = ((row.planned_parts as string[]) || []).filter((id) => {
-          const b = bargains.find((x) => String(x.id) === id)
-          return b && next.includes(String(b.supplier_id)) && id !== String(base.bargain_id)
-        })
-        return { ...base, planned_parts: parts }
-      })
-    )
+    setLoadingRows((current) => current.map((row) => fillLorry(row, next)))
   }
 
   function setTankerCount(value: string): void {
@@ -2222,8 +2230,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
     // new rows inherit the dialog's auto-picked bargain
     const auto = bargains.find((b) => String(b.id) === String(loadingForm.auto_bargain_id))
     setLoadingForm((p) => ({ ...p, tanker_count: count }))
+    const sups = (Array.isArray(loadingForm.supplier_picks) ? loadingForm.supplier_picks : []) as string[]
     setLoadingRows((current) =>
-      Array.from({ length: count }, (_, i) => current[i] || (auto ? bargainDefaults(auto) : {}))
+      Array.from({ length: count }, (_, i) => current[i] || fillLorry(auto ? bargainDefaults(auto) : {}, sups))
     )
   }
 
@@ -9196,97 +9205,122 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
                             <span className="rounded-[4px] border border-[#C6DAF0] bg-[#EAF0FA] px-1.5 text-[10px] font-extrabold uppercase text-[#1B4E82]">Shared lorry · {parts.length + 1} bargains</span>
                           )}
                         </div>
-                        <div className="grid items-start gap-3 p-4 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.6fr)_5.5rem_minmax(0,1fr)]">
-                          <div className="flex min-w-0 flex-col gap-1.5">
-                            <Label className="text-[10.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Tanker no.</Label>
-                            <Input placeholder="optional — set at loading" value={row.tanker_no || ''} onChange={(e) => setLoadingRows((current) => current.map((item, i) => (i === index ? { ...item, tanker_no: e.target.value } : item)))} />
-                          </div>
-                          <div className="flex min-w-0 flex-col gap-1.5">
-                            <Label className="text-[10.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Bargain (oldest auto) *</Label>
-                            <Select value={String(row.bargain_id || '')} onValueChange={(value) => {
-                              selectLoadingBargain(index, value)
-                              setLoadingRows((current) => current.map((item, i) => (i === index ? { ...item, planned_parts: ((item.planned_parts as string[]) || []).filter((x) => x !== value) } : item)))
-                            }} disabled={!pool.length}>
-                              <SelectTrigger className="bg-white" style={own ? { borderLeft: `4px solid ${toneOf(own.supplier_id)}` } : undefined}>
-                                <SelectValue placeholder={picks.length ? 'Select bargain' : 'Pick oil & supplier above'} />
-                              </SelectTrigger>
-                              <SelectContent className="w-[min(34rem,85vw)]">
-                                {pool.map((b) => (
-                                  <SelectItem key={b.id} value={String(b.id)}>
-                                    {b.bargain_no} · {shortName(b.supplier_name)} · BAL {formatNum(b.balance_qty)}
-                                  </SelectItem>
+                        <div className="space-y-3 p-4">
+                          <div className="grid items-start gap-3 md:grid-cols-[minmax(0,1fr)_5.5rem_minmax(0,1fr)]">
+                            <div className="flex min-w-0 flex-col gap-1.5">
+                              <Label className="text-[10.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Tanker no.</Label>
+                              <Input placeholder="optional — set at loading" value={row.tanker_no || ''} onChange={(e) => setLoadingRows((current) => current.map((item, i) => (i === index ? { ...item, tanker_no: e.target.value } : item)))} />
+                            </div>
+                            <div className="flex flex-col gap-1.5">
+                              <Label className="text-[10.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Condition</Label>
+                              <div className="flex h-9 rounded-md border border-[#C3D2C6] bg-white p-0.5">
+                                {['EX', 'DLD'].map((c) => (
+                                  <button
+                                    key={c}
+                                    type="button"
+                                    onClick={() => setLoadingRows((current) => current.map((item, i) => (i === index ? { ...item, condition: c } : item)))}
+                                    className={cn('flex-1 rounded text-xs font-extrabold transition-colors', (row.condition || 'EX') === c ? 'bg-[#0B3D2E] text-[#C7F03F] shadow-sm' : 'text-[#5A6B62] hover:text-[#0A1F17]')}
+                                  >
+                                    {c}
+                                  </button>
                                 ))}
-                              </SelectContent>
-                            </Select>
-                          </div>
-                          <div className="flex flex-col gap-1.5">
-                            <Label className="text-[10.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Condition</Label>
-                            <div className="flex h-9 rounded-md border border-[#C3D2C6] bg-white p-0.5">
-                              {['EX', 'DLD'].map((c) => (
-                                <button
-                                  key={c}
-                                  type="button"
-                                  onClick={() => setLoadingRows((current) => current.map((item, i) => (i === index ? { ...item, condition: c } : item)))}
-                                  className={cn('flex-1 rounded text-xs font-extrabold transition-colors', (row.condition || 'EX') === c ? 'bg-[#0B3D2E] text-[#C7F03F] shadow-sm' : 'text-[#5A6B62] hover:text-[#0A1F17]')}
-                                >
-                                  {c}
-                                </button>
-                              ))}
+                              </div>
+                            </div>
+                            <div className="flex min-w-0 flex-col gap-1.5">
+                              <Label className="text-[10.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Transporter</Label>
+                              <Select value={String(row.transporter_id || '')} onValueChange={(value) => setLoadingRows((current) => current.map((item, i) => (i === index ? { ...item, transporter_id: value } : item)))}>
+                                <SelectTrigger className="bg-white"><SelectValue placeholder="Optional" /></SelectTrigger>
+                                <SelectContent>
+                                  {transporters.map((tr) => (
+                                    <SelectItem key={tr.id} value={String(tr.id)}>{tr.name}</SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
                             </div>
                           </div>
-                          <div className="flex min-w-0 flex-col gap-1.5">
-                            <Label className="text-[10.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Transporter</Label>
-                            <Select value={String(row.transporter_id || '')} onValueChange={(value) => setLoadingRows((current) => current.map((item, i) => (i === index ? { ...item, transporter_id: value } : item)))}>
-                              <SelectTrigger className="bg-white"><SelectValue placeholder="Optional" /></SelectTrigger>
-                              <SelectContent>
-                                {transporters.map((tr) => (
-                                  <SelectItem key={tr.id} value={String(tr.id)}>{tr.name}</SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </div>
-                          {/* OTHER BARGAINS ON THIS LORRY — any picked supplier; qty typed at loading. */}
-                          {pool.length > 1 && !!row.bargain_id && (
-                            <div className="flex flex-wrap items-center gap-2 md:col-span-4">
-                              <span className="text-[10.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Also on this lorry</span>
-                              {parts.map((id) => {
+                          {/* THE LORRY'S BARGAINS — one line each, one per picked supplier to start; qty typed at loading. */}
+                          <div className="rounded-[8px] border border-[#DCE7DB] bg-[#F7FAF6] p-2.5">
+                            <div className="mb-2 flex items-center justify-between gap-2 px-0.5">
+                              <span className="text-[10.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
+                                {parts.length ? `Bargains on this lorry · ${parts.length + 1}` : 'Bargain (oldest auto) *'}
+                              </span>
+                              {parts.length > 0 && <span className="text-[10.5px] font-semibold text-[#8CA396]">qty for each is typed at loading</span>}
+                            </div>
+                            <div className="space-y-1.5">
+                              {[String(row.bargain_id || ''), ...parts].map((id, li) => {
                                 const b = bargains.find((x) => String(x.id) === id)
-                                if (!b) return null
+                                const tone = b ? toneOf(b.supplier_id) : '#C3D2C6'
+                                const taken = [String(row.bargain_id || ''), ...parts].filter((x) => x && x !== id)
                                 return (
-                                  <span key={id} className="flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11.5px] font-extrabold text-white" style={{ background: toneOf(b.supplier_id) }}>
-                                    {b.bargain_no} · {shortName(b.supplier_name)}
-                                    <button
-                                      type="button"
-                                      aria-label="Remove from this lorry"
-                                      onClick={() => setLoadingRows((current) => current.map((item, i) => (i === index ? { ...item, planned_parts: parts.filter((x) => x !== id) } : item)))}
-                                      className="rounded-full px-1 hover:bg-white/25"
-                                    >
-                                      ×
-                                    </button>
-                                  </span>
+                                  <div key={`${li}-${id}`} className="flex items-center gap-2">
+                                    <span className="flex h-6 w-6 flex-none items-center justify-center rounded-full text-[11px] font-extrabold text-white" style={{ background: tone }}>{li + 1}</span>
+                                    <div className="min-w-0 flex-1">
+                                      <Select
+                                        value={id}
+                                        disabled={!pool.length}
+                                        onValueChange={(value) => {
+                                          if (li === 0) {
+                                            selectLoadingBargain(index, value)
+                                            setLoadingRows((current) => current.map((item, i) => (i === index ? { ...item, planned_parts: ((item.planned_parts as string[]) || []).filter((x) => x !== value) } : item)))
+                                          } else {
+                                            setLoadingRows((current) => current.map((item, i) => (i === index ? { ...item, planned_parts: parts.map((x, j) => (j === li - 1 ? value : x)) } : item)))
+                                          }
+                                        }}
+                                      >
+                                        <SelectTrigger className="h-9 bg-white text-left" style={{ borderLeft: `4px solid ${tone}` }}>
+                                          <SelectValue placeholder={picks.length ? 'Select bargain' : 'Pick oil & supplier above'} />
+                                        </SelectTrigger>
+                                        <SelectContent className="w-[min(36rem,85vw)]">
+                                          {pool
+                                            .filter((x) => !taken.includes(String(x.id)))
+                                            .map((x) => (
+                                              <SelectItem key={x.id} value={String(x.id)}>
+                                                {x.bargain_no} · {shortName(x.supplier_name)} · BAL {formatNum(x.balance_qty)}
+                                              </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                      </Select>
+                                    </div>
+                                    {b && (
+                                      <span className="hidden w-[150px] flex-none truncate rounded-full px-2 py-0.5 text-center text-[10.5px] font-extrabold text-white md:block" style={{ background: tone }} title={String(b.supplier_name)}>
+                                        {shortName(b.supplier_name)}
+                                      </span>
+                                    )}
+                                    {li > 0 ? (
+                                      <button
+                                        type="button"
+                                        aria-label="Remove from this lorry"
+                                        onClick={() => setLoadingRows((current) => current.map((item, i) => (i === index ? { ...item, planned_parts: parts.filter((_, j) => j !== li - 1) } : item)))}
+                                        className="flex h-7 w-7 flex-none items-center justify-center rounded-full text-[#8A2B2B] hover:bg-[#FDECEA]"
+                                      >
+                                        ×
+                                      </button>
+                                    ) : (
+                                      <span className="w-7 flex-none" />
+                                    )}
+                                  </div>
                                 )
                               })}
-                              {others.length > 0 && (
-                                <div className="w-[260px]">
-                                  <Select
-                                    searchable
-                                    value=""
-                                    onValueChange={(v) => setLoadingRows((current) => current.map((item, i) => (i === index ? { ...item, planned_parts: [...parts, v] } : item)))}
-                                  >
-                                    <SelectTrigger className="h-8 border-dashed bg-white text-[12px] font-extrabold text-[#1B4E82]"><SelectValue placeholder="+ Add a bargain" /></SelectTrigger>
-                                    <SelectContent className="w-[min(34rem,85vw)]">
-                                      {others.map((b) => (
-                                        <SelectItem key={b.id} value={String(b.id)}>
-                                          {b.bargain_no} · {shortName(b.supplier_name)} · BAL {formatNum(b.balance_qty)}
-                                        </SelectItem>
-                                      ))}
-                                    </SelectContent>
-                                  </Select>
-                                </div>
-                              )}
-                              {parts.length === 0 && <span className="text-[11px] font-semibold text-[#8CA396]">optional — for a lorry carrying several bargains</span>}
                             </div>
-                          )}
+                            {!!row.bargain_id && others.length > 0 && (
+                              <div className="mt-2 w-[260px] pl-8">
+                                <Select
+                                  searchable
+                                  value=""
+                                  onValueChange={(v) => setLoadingRows((current) => current.map((item, i) => (i === index ? { ...item, planned_parts: [...parts, v] } : item)))}
+                                >
+                                  <SelectTrigger className="h-8 border-dashed bg-white text-[12px] font-extrabold text-[#1B4E82]"><SelectValue placeholder="+ Add another bargain" /></SelectTrigger>
+                                  <SelectContent className="w-[min(36rem,85vw)]">
+                                    {others.map((x) => (
+                                      <SelectItem key={x.id} value={String(x.id)}>
+                                        {x.bargain_no} · {shortName(x.supplier_name)} · BAL {formatNum(x.balance_qty)}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
                     )
