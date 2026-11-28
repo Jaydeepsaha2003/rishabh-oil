@@ -24557,6 +24557,7 @@ async function createOrder(v) {
     const id = Number(res.lastInsertRowid);
     if (tdsManualOf(v) != null) await getClient().execute({ sql: "UPDATE orders SET tds_manual = ? WHERE id = ?", args: [tdsManualOf(v), id] });
     if (v.party_gstin) await getClient().execute({ sql: "UPDATE orders SET party_gstin = ? WHERE id = ?", args: [String(v.party_gstin).trim().toUpperCase(), id] });
+    if (v.lr_no !== void 0) await getClient().execute({ sql: "UPDATE orders SET lr_no = ? WHERE id = ?", args: [String(v.lr_no || "").trim() || null, id] });
     const billGroup = String(v.bill_group || "").trim();
     if (billGroup) {
       await getClient().execute({
@@ -24842,6 +24843,7 @@ async function updateOrder(id, v) {
     if ("party_gstin" in v) {
       await getClient().execute({ sql: "UPDATE orders SET party_gstin = ? WHERE id = ?", args: [v.party_gstin ? String(v.party_gstin).trim().toUpperCase() : null, id] });
     }
+    if ("lr_no" in v) await getClient().execute({ sql: "UPDATE orders SET lr_no = ? WHERE id = ?", args: [String(v.lr_no || "").trim() || null, id] });
     if (wasConsignment) {
       await getClient().execute({
         sql: "UPDATE orders SET received_qty = ?, status = 'received' WHERE id = ?",
@@ -42060,6 +42062,9 @@ var REQUIRED_COLUMNS = [
   // The other bargains named for this lorry when it was sent (JSON list of
   // bargain ids) — offered as part rows at Loaded, qty typed there.
   { table: "purchase_tankers", column: "planned_parts", type: "TEXT" },
+  // The LR no.(s) of the tanker this purchase invoice covers — picked from the
+  // tanker's own LR list when one lorry is billed on several invoices.
+  { table: "orders", column: "lr_no", type: "TEXT" },
   // A note typed on Mark received — kept on the bill, carried on its voucher.
   { table: "bill_discountings", column: "received_note", type: "TEXT" },
   { table: "bd_repayments", column: "tds_ledger", type: "TEXT" },
