@@ -285,6 +285,9 @@ const TK_DRAWER = __WEB__
 // at the viewport so the register is still visible beside the panel.
 const TK_WIDE = __WEB__ ? '!w-[min(100vw,880px)]' : ''
 const TK_NARROW = __WEB__ ? '!w-[min(100vw,790px)]' : ''
+// Loaded carries the bargains box (one lorry, several bargains): a bargain name,
+// supplier and balance per row beside its qty — it needs the room.
+const TK_LOADED = __WEB__ ? '!w-[min(100vw,1040px)]' : ''
 
 // The forest head: what stage this is, which tanker, and the load in one line.
 const TK_HEAD = __WEB__ ? '!m-0 !space-y-0 !bg-[#0B3D2E] !px-[26px] !pb-[18px] !pt-5 !text-left' : ''
@@ -2170,9 +2173,10 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
 
   // Bargains matching the dialog-level oil + supplier picks, oldest first.
   function routeBargains(picks: Row): Row[] {
-    if (!picks.oil_pick || !picks.supplier_pick) return []
+    const sups = Array.isArray(picks.supplier_picks) && picks.supplier_picks.length ? (picks.supplier_picks as string[]) : picks.supplier_pick ? [String(picks.supplier_pick)] : []
+    if (!picks.oil_pick || !sups.length) return []
     return bargains
-      .filter((b) => String(b.oil_type_id) === picks.oil_pick && String(b.supplier_id) === picks.supplier_pick)
+      .filter((b) => String(b.oil_type_id) === picks.oil_pick && sups.includes(String(b.supplier_id)))
       .sort((a, b) => {
         const d = String(a.bargain_date || '').localeCompare(String(b.bargain_date || ''))
         return d !== 0 ? d : (Number(a.id) || 0) - (Number(b.id) || 0)
@@ -2181,21 +2185,36 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
 
   // Oil picked once for the whole dialog — reset supplier and row bargains.
   function pickOil(oilId: string): void {
-    setLoadingForm((p) => ({ ...p, oil_pick: oilId, supplier_pick: '', auto_bargain_id: '' }))
+    setLoadingForm((p) => ({ ...p, oil_pick: oilId, supplier_pick: '', supplier_picks: [], auto_bargain_id: '' }))
     setLoadingRows((current) =>
-      current.map((row) => ({ ...row, bargain_id: '', supplier_name: '', balance_qty: undefined }))
+      current.map((row) => ({ ...row, bargain_id: '', supplier_name: '', balance_qty: undefined, planned_parts: [] }))
     )
   }
 
   // Supplier picked once — auto-select the OLDEST bargain (preferring balance
   // left) and apply it to every tanker row; each row stays changeable.
+  // SEVERAL SUPPLIERS: tapping a supplier adds / removes it. The first one picked
+  // gives every tanker its oldest bargain; the others' bargains can be named
+  // per tanker as sharing the lorry.
   function pickSupplier(supplierId: string): void {
-    const candidates = routeBargains({ oil_pick: loadingForm.oil_pick, supplier_pick: supplierId })
+    const cur = (Array.isArray(loadingForm.supplier_picks) ? (loadingForm.supplier_picks as string[]) : []).slice()
+    const next = cur.includes(supplierId) ? cur.filter((x) => x !== supplierId) : [...cur, supplierId]
+    const first = next[0] || ''
+    const candidates = first ? routeBargains({ oil_pick: loadingForm.oil_pick, supplier_pick: first }) : []
     const pick = candidates.find((b) => Number(b.balance_qty) > 0.005) || candidates[0]
-    setLoadingForm((p) => ({ ...p, supplier_pick: supplierId, auto_bargain_id: pick ? String(pick.id) : '' }))
-    if (pick) {
-      setLoadingRows((current) => current.map((row) => ({ ...row, ...bargainDefaults(pick) })))
-    }
+    setLoadingForm((p) => ({ ...p, supplier_picks: next, supplier_pick: first, auto_bargain_id: pick ? String(pick.id) : '' }))
+    setLoadingRows((current) =>
+      current.map((row) => {
+        // A row on a supplier still picked keeps its bargain; the rest take the first supplier's oldest.
+        const keep = row.bargain_id && next.includes(String(row.supplier_id))
+        const base = keep ? row : pick ? { ...row, ...bargainDefaults(pick) } : { ...row, bargain_id: '', supplier_name: '' }
+        const parts = ((row.planned_parts as string[]) || []).filter((id) => {
+          const b = bargains.find((x) => String(x.id) === id)
+          return b && next.includes(String(b.supplier_id)) && id !== String(base.bargain_id)
+        })
+        return { ...base, planned_parts: parts }
+      })
+    )
   }
 
   function setTankerCount(value: string): void {
@@ -2219,7 +2238,8 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
           ...row,
           condition: row.condition || 'EX',
           transporter_id: row.transporter_id ? Number(row.transporter_id) : null,
-          factory_entry_date: loadingForm.factory_entry_date
+          factory_entry_date: loadingForm.factory_entry_date,
+          planned_parts: ((row.planned_parts as string[]) || []).map(Number)
         })
       }
       toast.success(`${loadingRows.length} tanker${loadingRows.length === 1 ? '' : 's'} sent to supplier — ready to be loaded`)
@@ -2320,7 +2340,14 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
     })
     setActionForm(next)
     setExcess(null)
-    setSplitParts([])
+    // Bargains named for this lorry when it was sent: ready as part rows, qty to type.
+    let planned: string[] = []
+    try {
+      planned = target === 'loaded' && row.planned_parts ? (JSON.parse(String(row.planned_parts)) as unknown[]).map(String) : []
+    } catch {
+      planned = []
+    }
+    setSplitParts(planned.filter((id) => bargains.some((b) => String(b.id) === id)).map((id) => ({ bargain_id: id, qty: '' })))
     setMainQty('')
     setActionRow(row)
   }
@@ -9080,110 +9107,200 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
       )}
 
       <Dialog open={loadingOpen} onOpenChange={setLoadingOpen}>
-        <DialogContent className="max-w-6xl">
-          <DialogHeader>
-            <DialogTitle>Send tankers to supplier — to be loaded</DialogTitle>
-          </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            Pick the oil and supplier once — the oldest open bargain is auto-selected for every tanker (changeable per tanker). Loaded quantity and payment are entered after loading.
-          </p>
-          <div className="grid gap-3 md:grid-cols-4">
-            <div className="flex flex-col gap-1.5">
-              <Label>Oil *</Label>
-              <Select value={String(loadingForm.oil_pick || '')} onValueChange={pickOil}>
-                <SelectTrigger><SelectValue placeholder="Select oil" /></SelectTrigger>
-                <SelectContent>
-                  {bargainOils.map(([id, label]) => (
-                    <SelectItem key={id} value={id}>{label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label>Supplier *</Label>
-              <Select value={String(loadingForm.supplier_pick || '')} onValueChange={pickSupplier} disabled={!loadingForm.oil_pick}>
-                <SelectTrigger><SelectValue placeholder={loadingForm.oil_pick ? 'Select supplier' : 'Pick oil first'} /></SelectTrigger>
-                <SelectContent>
-                  {suppliersForOil(String(loadingForm.oil_pick || '')).map((s) => (
-                    <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label>Number of tankers</Label>
-              <Input type="number" min="1" max="20" value={loadingForm.tanker_count} onChange={(e) => setTankerCount(e.target.value)} />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label>Tanker placement date</Label>
-              <DatePicker value={loadingForm.factory_entry_date || ''} onChange={(v) => setLoadingForm((p) => ({ ...p, factory_entry_date: v }))} />
-            </div>
-          </div>
-          <div className="max-h-[55vh] space-y-3 overflow-y-auto pr-1">
-            {loadingRows.map((row, index) => (
-              <div
-                key={index}
-                className="grid items-start gap-3 rounded-lg border p-3 md:grid-cols-[2.25rem_minmax(0,1fr)_minmax(0,1.5fr)_5.5rem_minmax(0,1.2fr)]"
-              >
-                <div className="flex h-9 items-center justify-center rounded-md bg-muted text-sm font-semibold md:mt-[26px]">
-                  {index + 1}
+        <DialogContent className="max-h-[92vh] w-[calc(100vw-2rem)] max-w-6xl gap-0 overflow-hidden rounded-[14px] border-0 bg-[#F1F5EF] p-0 [&>button]:text-white/70 [&>button]:opacity-100 hover:[&>button]:text-white">
+          {(() => {
+            const picks = (Array.isArray(loadingForm.supplier_picks) ? loadingForm.supplier_picks : []) as string[]
+            const oilSuppliers = suppliersForOil(String(loadingForm.oil_pick || ''))
+            const pool = routeBargains(loadingForm)
+            const SUP_TONES = ['#0B6B45', '#1B4E82', '#8A5300', '#7A2E8C', '#B3261E', '#0E7490']
+            const toneOf = (supplierId: unknown): string => {
+              const i = picks.indexOf(String(supplierId))
+              return SUP_TONES[(i < 0 ? 0 : i) % SUP_TONES.length]
+            }
+            const shortName = (nm: unknown): string => String(nm || '').replace(/\s+(PRIVATE|PVT\.?)\s+(LIMITED|LTD\.?)$/i, '').trim()
+            return (
+              <>
+                <div className="bg-[#0B3D2E] px-6 pb-4 pt-5">
+                  <div className="text-[11px] font-extrabold uppercase tracking-[.14em] text-[#8FBFA8]">Tankers · to be loaded</div>
+                  <DialogTitle className="mt-1 text-[21px] font-extrabold tracking-[-0.01em] text-white">Send tankers to supplier</DialogTitle>
+                  <p className="mt-1.5 text-[12.5px] font-semibold text-[#8FBFA8]">
+                    Pick the oil, then one or more suppliers. Each tanker takes the oldest open bargain (changeable), and can name other bargains sharing the same lorry — their qty is typed at loading.
+                  </p>
                 </div>
-                <div className="flex min-w-0 flex-col gap-1.5">
-                  <Label>Tanker number</Label>
-                  <Input placeholder="optional — set at loading" value={row.tanker_no || ''} onChange={(e) => setLoadingRows((current) => current.map((item, i) => i === index ? { ...item, tanker_no: e.target.value } : item))} />
-                </div>
-                <div className="flex min-w-0 flex-col gap-1.5">
-                  <Label>Bargain (oldest auto) *</Label>
-                  <Select
-                    value={String(row.bargain_id || '')}
-                    onValueChange={(value) => selectLoadingBargain(index, value)}
-                    disabled={!loadingForm.oil_pick || !loadingForm.supplier_pick}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder={loadingForm.supplier_pick ? 'Select bargain' : 'Pick oil & supplier above'} />
-                    </SelectTrigger>
-                    <SelectContent className="w-[min(30rem,85vw)]">
-                      {routeBargains(loadingForm).map((b) => (
-                        <SelectItem key={b.id} value={String(b.id)}>
-                          {b.bargain_no} · BAL {formatNum(b.balance_qty)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <Label>Condition</Label>
-                  <div className="flex h-9 rounded-md border p-0.5">
-                    {['EX', 'DLD'].map((c) => (
-                      <button
-                        key={c}
-                        type="button"
-                        onClick={() => setLoadingRows((current) => current.map((item, i) => i === index ? { ...item, condition: c } : item))}
-                        className={cn(
-                          'flex-1 rounded text-xs font-semibold transition-colors',
-                          (row.condition || 'EX') === c ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
-                        )}
-                      >
-                        {c}
-                      </button>
-                    ))}
+                <div className="max-h-[calc(92vh-170px)] space-y-3 overflow-y-auto px-6 py-4">
+                  <div className="grid gap-3 rounded-[10px] border border-[#DCE7DB] bg-white p-4 md:grid-cols-[minmax(0,1fr)_9rem_12rem]">
+                    <div className="flex flex-col gap-1.5">
+                      <Label className="text-[10.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Oil *</Label>
+                      <Select value={String(loadingForm.oil_pick || '')} onValueChange={pickOil}>
+                        <SelectTrigger className="bg-white font-bold"><SelectValue placeholder="Select oil" /></SelectTrigger>
+                        <SelectContent>
+                          {bargainOils.map(([id, label]) => (
+                            <SelectItem key={id} value={id}>{label}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label className="text-[10.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Tankers</Label>
+                      <Input type="number" min="1" max="20" className="font-bold" value={loadingForm.tanker_count} onChange={(e) => setTankerCount(e.target.value)} />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label className="text-[10.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Placement date</Label>
+                      <DatePicker value={loadingForm.factory_entry_date || ''} onChange={(v) => setLoadingForm((p) => ({ ...p, factory_entry_date: v }))} />
+                    </div>
+                    <div className="flex flex-col gap-1.5 md:col-span-3">
+                      <Label className="text-[10.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">
+                        Suppliers * <span className="normal-case tracking-normal text-[#8CA396]">— tap one or more</span>
+                      </Label>
+                      {!loadingForm.oil_pick ? (
+                        <div className="rounded-[8px] border border-dashed border-[#C3D2C6] px-3 py-2.5 text-[12px] font-semibold text-[#8CA396]">Pick the oil first</div>
+                      ) : oilSuppliers.length === 0 ? (
+                        <div className="rounded-[8px] border border-dashed border-[#C3D2C6] px-3 py-2.5 text-[12px] font-semibold text-[#8CA396]">No supplier has a bargain for this oil</div>
+                      ) : (
+                        <div className="flex flex-wrap gap-2">
+                          {oilSuppliers.map((s0) => {
+                            const on = picks.includes(s0.id)
+                            const tone = on ? toneOf(s0.id) : ''
+                            const open = bargains.filter((b) => String(b.supplier_id) === s0.id && String(b.oil_type_id) === String(loadingForm.oil_pick) && Number(b.balance_qty) > 0.005)
+                            return (
+                              <button
+                                key={s0.id}
+                                type="button"
+                                onClick={() => pickSupplier(s0.id)}
+                                className={cn('flex items-center gap-2 rounded-full border px-3 py-1.5 text-[12px] font-extrabold transition-colors', on ? 'text-white shadow-sm' : 'border-[#C3D2C6] bg-white text-[#33473E] hover:bg-[#F0F8F3]')}
+                                style={on ? { background: tone, borderColor: tone } : undefined}
+                              >
+                                {on && <span className="flex h-4 w-4 items-center justify-center rounded-full bg-white/25 text-[10px]">{picks.indexOf(s0.id) + 1}</span>}
+                                {shortName(s0.name)}
+                                <span className={cn('rounded-full px-1.5 text-[10px] font-bold', on ? 'bg-white/20' : 'bg-[#EEF3EE] text-[#5A6B62]')}>
+                                  {open.length} open · {formatNum(open.reduce((t, b) => t + Number(b.balance_qty || 0), 0))}
+                                </span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
                   </div>
+
+                  {loadingRows.map((row, index) => {
+                    const own = pool.find((b) => String(b.id) === String(row.bargain_id))
+                    const parts = ((row.planned_parts as string[]) || []).filter(Boolean)
+                    const others = pool.filter((b) => String(b.id) !== String(row.bargain_id) && !parts.includes(String(b.id)) && Number(b.balance_qty) > 0.005)
+                    return (
+                      <div key={index} className="overflow-hidden rounded-[10px] border border-[#DCE7DB] bg-white">
+                        <div className="flex items-center gap-3 border-b border-[#EFF3EE] bg-[#F7FAF6] px-4 py-2">
+                          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#C7F03F] text-[12px] font-extrabold text-[#0B3D2E]">{index + 1}</span>
+                          <span className="text-[12.5px] font-extrabold text-[#0A1F17]">Tanker {index + 1}</span>
+                          {parts.length > 0 && (
+                            <span className="rounded-[4px] border border-[#C6DAF0] bg-[#EAF0FA] px-1.5 text-[10px] font-extrabold uppercase text-[#1B4E82]">Shared lorry · {parts.length + 1} bargains</span>
+                          )}
+                        </div>
+                        <div className="grid items-start gap-3 p-4 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.6fr)_5.5rem_minmax(0,1fr)]">
+                          <div className="flex min-w-0 flex-col gap-1.5">
+                            <Label className="text-[10.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Tanker no.</Label>
+                            <Input placeholder="optional — set at loading" value={row.tanker_no || ''} onChange={(e) => setLoadingRows((current) => current.map((item, i) => (i === index ? { ...item, tanker_no: e.target.value } : item)))} />
+                          </div>
+                          <div className="flex min-w-0 flex-col gap-1.5">
+                            <Label className="text-[10.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Bargain (oldest auto) *</Label>
+                            <Select value={String(row.bargain_id || '')} onValueChange={(value) => {
+                              selectLoadingBargain(index, value)
+                              setLoadingRows((current) => current.map((item, i) => (i === index ? { ...item, planned_parts: ((item.planned_parts as string[]) || []).filter((x) => x !== value) } : item)))
+                            }} disabled={!pool.length}>
+                              <SelectTrigger className="bg-white" style={own ? { borderLeft: `4px solid ${toneOf(own.supplier_id)}` } : undefined}>
+                                <SelectValue placeholder={picks.length ? 'Select bargain' : 'Pick oil & supplier above'} />
+                              </SelectTrigger>
+                              <SelectContent className="w-[min(34rem,85vw)]">
+                                {pool.map((b) => (
+                                  <SelectItem key={b.id} value={String(b.id)}>
+                                    {b.bargain_no} · {shortName(b.supplier_name)} · BAL {formatNum(b.balance_qty)}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div className="flex flex-col gap-1.5">
+                            <Label className="text-[10.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Condition</Label>
+                            <div className="flex h-9 rounded-md border border-[#C3D2C6] bg-white p-0.5">
+                              {['EX', 'DLD'].map((c) => (
+                                <button
+                                  key={c}
+                                  type="button"
+                                  onClick={() => setLoadingRows((current) => current.map((item, i) => (i === index ? { ...item, condition: c } : item)))}
+                                  className={cn('flex-1 rounded text-xs font-extrabold transition-colors', (row.condition || 'EX') === c ? 'bg-[#0B3D2E] text-[#C7F03F] shadow-sm' : 'text-[#5A6B62] hover:text-[#0A1F17]')}
+                                >
+                                  {c}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="flex min-w-0 flex-col gap-1.5">
+                            <Label className="text-[10.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Transporter</Label>
+                            <Select value={String(row.transporter_id || '')} onValueChange={(value) => setLoadingRows((current) => current.map((item, i) => (i === index ? { ...item, transporter_id: value } : item)))}>
+                              <SelectTrigger className="bg-white"><SelectValue placeholder="Optional" /></SelectTrigger>
+                              <SelectContent>
+                                {transporters.map((tr) => (
+                                  <SelectItem key={tr.id} value={String(tr.id)}>{tr.name}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          {/* OTHER BARGAINS ON THIS LORRY — any picked supplier; qty typed at loading. */}
+                          {pool.length > 1 && !!row.bargain_id && (
+                            <div className="flex flex-wrap items-center gap-2 md:col-span-4">
+                              <span className="text-[10.5px] font-extrabold uppercase tracking-[.1em] text-[#5A6B62]">Also on this lorry</span>
+                              {parts.map((id) => {
+                                const b = bargains.find((x) => String(x.id) === id)
+                                if (!b) return null
+                                return (
+                                  <span key={id} className="flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11.5px] font-extrabold text-white" style={{ background: toneOf(b.supplier_id) }}>
+                                    {b.bargain_no} · {shortName(b.supplier_name)}
+                                    <button
+                                      type="button"
+                                      aria-label="Remove from this lorry"
+                                      onClick={() => setLoadingRows((current) => current.map((item, i) => (i === index ? { ...item, planned_parts: parts.filter((x) => x !== id) } : item)))}
+                                      className="rounded-full px-1 hover:bg-white/25"
+                                    >
+                                      ×
+                                    </button>
+                                  </span>
+                                )
+                              })}
+                              {others.length > 0 && (
+                                <div className="w-[260px]">
+                                  <Select
+                                    searchable
+                                    value=""
+                                    onValueChange={(v) => setLoadingRows((current) => current.map((item, i) => (i === index ? { ...item, planned_parts: [...parts, v] } : item)))}
+                                  >
+                                    <SelectTrigger className="h-8 border-dashed bg-white text-[12px] font-extrabold text-[#1B4E82]"><SelectValue placeholder="+ Add a bargain" /></SelectTrigger>
+                                    <SelectContent className="w-[min(34rem,85vw)]">
+                                      {others.map((b) => (
+                                        <SelectItem key={b.id} value={String(b.id)}>
+                                          {b.bargain_no} · {shortName(b.supplier_name)} · BAL {formatNum(b.balance_qty)}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                              )}
+                              {parts.length === 0 && <span className="text-[11px] font-semibold text-[#8CA396]">optional — for a lorry carrying several bargains</span>}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
                 </div>
-                <div className="flex min-w-0 flex-col gap-1.5">
-                  <Label>Transporter</Label>
-                  <Select value={String(row.transporter_id || '')} onValueChange={(value) => setLoadingRows((current) => current.map((item, i) => i === index ? { ...item, transporter_id: value } : item))}>
-                    <SelectTrigger><SelectValue placeholder="Optional" /></SelectTrigger>
-                    <SelectContent>
-                      {transporters.map((tr) => (
-                        <SelectItem key={tr.id} value={String(tr.id)}>{tr.name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                <div className="flex items-center justify-end gap-2 border-t border-[#DCE7DB] bg-white px-6 py-3">
+                  <Button variant="outline" onClick={() => setLoadingOpen(false)}>Cancel</Button>
+                  <Button className="bg-[#0B3D2E] font-extrabold text-[#C7F03F] hover:bg-[#0E4A38]" onClick={createTanker}>
+                    Send {loadingRows.length} tanker{loadingRows.length === 1 ? '' : 's'}
+                  </Button>
                 </div>
-              </div>
-            ))}
-          </div>
-          <DialogFooter><Button variant="outline" onClick={() => setLoadingOpen(false)}>Cancel</Button><Button onClick={createTanker}>Send {loadingRows.length} tanker{loadingRows.length === 1 ? '' : 's'}</Button></DialogFooter>
+              </>
+            )
+          })()}
         </DialogContent>
       </Dialog>
 
@@ -9191,9 +9308,9 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
         <DialogContent
           className={cn(
             'max-h-[92vh] w-[calc(100vw-2rem)] overflow-y-auto',
-            target === 'empty' ? 'sm:max-w-3xl' : 'sm:max-w-2xl',
+            target === 'empty' ? 'sm:max-w-3xl' : target === 'loaded' ? 'sm:max-w-5xl' : 'sm:max-w-2xl',
             TK_DRAWER,
-            target === 'empty' ? TK_WIDE : TK_NARROW,
+            target === 'empty' ? TK_WIDE : target === 'loaded' ? TK_LOADED : TK_NARROW,
             // A phone has room for one column, not two: the stage forms pair
             // fields side by side (date + qty, transporter + rate, the two
             // weighment slips), which runs off a 375px screen. Stack every one

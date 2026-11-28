@@ -2201,8 +2201,8 @@ export async function createPurchaseTanker(v: Row): Promise<{ id: number }> {
   const res = await getClient().execute({
     sql: `INSERT INTO purchase_tankers
       (company_id, tanker_no, loaded_date, bargain_id, supplier_id, oil_type_id, loaded_qty, uom, payment_mode,
-       transporter_id, status, condition)
-      VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'pending', ?, 'supplier_factory', ?)`,
+       transporter_id, status, condition, planned_parts)
+      VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'pending', ?, 'supplier_factory', ?, ?)`,
     args: [
       getActiveCompanyId(),
       String(v.tanker_no || '').trim(),
@@ -2212,7 +2212,12 @@ export async function createPurchaseTanker(v: Row): Promise<{ id: number }> {
       n(v.oil_type_id),
       v.uom || 'MT',
       v.transporter_id ? n(v.transporter_id) : null,
-      normCondition(v.condition)
+      normCondition(v.condition),
+      // Other bargains sharing this lorry (any supplier), qty set at loading.
+      (() => {
+        const ids = (Array.isArray(v.planned_parts) ? v.planned_parts : []).map(n).filter((x) => x && x !== n(v.bargain_id))
+        return ids.length ? JSON.stringify(Array.from(new Set(ids))) : null
+      })()
     ]
   })
   return { id: Number(res.lastInsertRowid) }
