@@ -693,6 +693,19 @@ export async function assertAllowed(channel: string, args: unknown): Promise<voi
     }
   }
   const id = Number((args as Row)?.id) || 0
+  // A BD BILL'S OWN CHANGES are held to the days window by the bill's date —
+  // the day the NBFC's money landed, else the day it was entered (asked
+  // 2026-11-28: a 3-day window on Bill Discounting). Only the channels whose
+  // id IS the bill; repayments and the rest carry their own dates above.
+  if (ns === 'bd' && (action === 'edit' || action === 'delete') && id && ['update', 'adminUpdate', 'delete', 'reopen', 'unmarkReceived', 'setRoute', 'setVoucherBank'].includes(op)) {
+    try {
+      entryDate = (
+        await getClient().execute({ sql: 'SELECT COALESCE(payment_received_date, substr(created_at, 1, 10)) AS d FROM bill_discountings WHERE id = ? LIMIT 1', args: [id] })
+      ).rows[0]?.d
+    } catch {
+      entryDate = undefined
+    }
+  }
   // For a create there is no row yet, so the date being written IS the date to
   // judge. It arrives on the values object under its own column name.
   if (action === 'create' && rule.dateCol) {
