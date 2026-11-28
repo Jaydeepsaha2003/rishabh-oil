@@ -1734,20 +1734,32 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
           (() => {
             const gp = row.group_parts as Row[]
             const done = gp.filter((p) => p.invoice_no).length
+            const bills = gp.reduce((t, p) => t + Math.max(tankerInvoices(p).length, p.invoice_no ? 1 : 0), 0)
             return (
               <span className={cn('whitespace-nowrap text-[12px] font-bold', done === gp.length ? 'text-[#0B6B45]' : done ? 'text-[#8A5300]' : 'text-[#A8B8AE]')}>
-                {done === 0 ? 'Not entered' : `${done} of ${gp.length} invoiced`}
+                {done === 0 ? 'Not entered' : done === gp.length ? `${bills} invoice${bills === 1 ? '' : 's'}` : `${done} of ${gp.length} parts invoiced`}
               </span>
             )
           })()
         ) : Array.isArray(row.group_parts) ? (
           <div className="grid gap-0.5">
-            {(row.group_parts as Row[]).map((p) => (
-              <div key={String(p.id)} className="whitespace-nowrap text-[12px]">
-                {p.invoice_no ? <b>{String(p.invoice_no)}</b> : <span className="text-[#A8B8AE]">Not entered</span>}{' '}
-                <span className="text-[10.5px] font-semibold text-muted-foreground">{String(p.supplier_name || '').split(' ')[0]}</span>
-              </div>
-            ))}
+            {/* Every invoice of every part — a part billed on two bills shows both, each with its qty. */}
+            {(row.group_parts as Row[]).flatMap((p) => {
+              const ivs = tankerInvoices(p)
+              const who = <span className="text-[10.5px] font-semibold text-muted-foreground">{String(p.supplier_name || '').split(' ')[0]}</span>
+              if (ivs.length > 1) {
+                return ivs.map((iv) => (
+                  <div key={`${String(p.id)}-${iv.order_id}`} className="whitespace-nowrap text-[12px]">
+                    <b>{iv.invoice_no || '—'}</b> <span className="text-[10.5px] font-semibold text-muted-foreground">{formatNum(iv.qty)}</span> {who}
+                  </div>
+                ))
+              }
+              return [
+                <div key={String(p.id)} className="whitespace-nowrap text-[12px]">
+                  {p.invoice_no ? <b>{String(p.invoice_no)}</b> : <span className="text-[#A8B8AE]">Not entered</span>} {who}
+                </div>
+              ]
+            })}
           </div>
         ) : tankerInvoices(row).length > 1 ? (
           // One lorry on several invoices: each with its share of the load.
