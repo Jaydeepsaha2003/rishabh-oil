@@ -20985,6 +20985,13 @@ async function assertAllowed(channel, args) {
     }
   }
   const id = Number(args?.id) || 0;
+  if (ns === "bd" && (action === "edit" || action === "delete") && id && ["update", "adminUpdate", "delete", "reopen", "unmarkReceived", "setRoute", "setVoucherBank"].includes(op)) {
+    try {
+      entryDate = (await getClient().execute({ sql: "SELECT COALESCE(payment_received_date, substr(created_at, 1, 10)) AS d FROM bill_discountings WHERE id = ? LIMIT 1", args: [id] })).rows[0]?.d;
+    } catch {
+      entryDate = void 0;
+    }
+  }
   if (action === "create" && rule.dateCol) {
     const a = args;
     const key3 = rule.createDateKey || rule.dateCol;
