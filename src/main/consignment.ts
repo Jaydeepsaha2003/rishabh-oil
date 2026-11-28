@@ -292,8 +292,72 @@ export async function createConsignmentOut(v: Row): Promise<{ id: number }> {
   return { id: Number(res.lastInsertRowid) }
 }
 
+// THE PARTY'S STOCK STILL WITH US, per party and product — what a Gate Out
+// "MNC stock out" can be weighed against (Gate Entry users need not hold the
+// Stock page's grant to see it).
+export async function mncHoldings(): Promise<Row[]> {
+  await ensureOuts()
+  const cid = getActiveCompanyId()
+  const pairs = toPlain(
+    await getClient().execute({
+      sql: `SELECT DISTINCT cs.supplier_id, cs.product_id, s.name AS supplier_name, p.name AS product_name, COALESCE(p.code, p.name) AS product_code
+              FROM consignment_stock cs LEFT JOIN suppliers s ON s.id = cs.supplier_id LEFT JOIN products p ON p.id = cs.product_id
+             WHERE cs.company_id = ?`,
+      args: [cid]
+    })
+  )
+  const out: Row[] = []
+  for (const r of pairs) {
+    const left = await consignmentAvailable(n(r.supplier_id), n(r.product_id), cid)
+    if (left > 0.0005) out.push({ ...r, left: Math.round(left * 1000) / 1000 })
+  }
+  return out.sort((a, b) => String(a.supplier_name).localeCompare(String(b.supplier_name)))
+}
+
+/**
+ * A GATE OUT MARKED "MNC STOCK OUT" IS THE PARTY TAKING ITS OWN STOCK: once the
+ * lorry is weighed (completed, net known) its net is booked as a stock out to
+ * the party, linked to the gate entry; re-weighing updates it; an entry that is
+ * no longer an MNC stock out, not completed, rejected or deleted takes it away.
+ */
+export async function syncMncGateOut(entryId: number): Promise<void> {
+  await ensureOuts()
+  const c = getClient()
+  const e = toPlain(await c.execute({ sql: 'SELECT * FROM gate_entries WHERE id = ?', args: [n(entryId)] }))[0]
+  const linked = toPlain(await c.execute({ sql: 'SELECT id FROM consignment_outs WHERE gate_entry_id = ?', args: [n(entryId)] }))[0]
+  const live =
+    e &&
+    String(e.direction) === 'out' &&
+    n(e.is_direct_mnc) === 1 &&
+    n(e.supplier_id) &&
+    n(e.oil_type_id) &&
+    String(e.status) === 'completed' &&
+    !e.rejected_at &&
+    n(e.received_qty) > 0
+  if (!live) {
+    if (linked) await c.execute({ sql: 'DELETE FROM consignment_outs WHERE id = ?', args: [n(linked.id)] })
+    return
+  }
+  const qty = Math.round(n(e.received_qty) * 1000) / 1000
+  const date = String(e.out_date || e.entry_date || todayISO()).slice(0, 10)
+  const note = `Gate out ${String(e.gate_entry_no || '')} · ${String(e.tanker_no || '')}`.trim()
+  if (linked) {
+    await c.execute({
+      sql: 'UPDATE consignment_outs SET supplier_id = ?, product_id = ?, out_date = ?, qty = ?, uom = ?, note = ? WHERE id = ?',
+      args: [n(e.supplier_id), n(e.oil_type_id), date, qty, String(e.uom || 'MT'), note, n(linked.id)]
+    })
+  } else {
+    await c.execute({
+      sql: 'INSERT INTO consignment_outs (company_id, supplier_id, product_id, out_date, qty, uom, note, gate_entry_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      args: [getActiveCompanyId(), n(e.supplier_id), n(e.oil_type_id), date, qty, String(e.uom || 'MT'), note, n(entryId)]
+    })
+  }
+}
+
 export async function deleteConsignmentOut(id: number): Promise<{ id: number }> {
   await ensureOuts()
+  const g = (await getClient().execute({ sql: 'SELECT gate_entry_id FROM consignment_outs WHERE id = ?', args: [n(id)] })).rows[0]
+  if (g && g.gate_entry_id) throw new Error('This stock out came from a Gate Out — delete or correct that gate entry instead')
   await getClient().execute({ sql: 'DELETE FROM consignment_outs WHERE id = ? AND company_id = ?', args: [n(id), getActiveCompanyId()] })
   return { id: n(id) }
 }

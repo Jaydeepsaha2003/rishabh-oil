@@ -864,6 +864,8 @@ const api = {
     waiveOuts: (groups: string[], reason: string): Promise<{ done: string[]; failed: { group: string; error: string }[] }> =>
       ipcRenderer.invoke('gate:waiveOuts', { groups, reason }),
     partyCategories: (): Promise<Row[]> => ipcRenderer.invoke('gate:partyCategories'),
+    // The party's (MNC) stock still with us, for a Gate Out "MNC stock out".
+    mncHoldings: (): Promise<Row[]> => ipcRenderer.invoke('gate:mncHoldings'),
     // Every gate entry behind one purchase or one sales invoice.
     forRecord: (q: { orderId?: number; saleIds?: number[]; invoiceGroup?: string }): Promise<{ rows: Row[]; hidden: number; window_from: string }> =>
       ipcRenderer.invoke('gate:forRecord', q),

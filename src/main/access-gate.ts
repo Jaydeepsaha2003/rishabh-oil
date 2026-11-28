@@ -115,7 +115,7 @@ const READ_OPS = new Set([
   'fyTaxable', 'needs', 'breakdown', 'nextNo', 'liveUsers', 'ips', 'logs', 'dispatchableSales',
   'mine', 'pendingCount', 'pending', 'lots', 'unmapped', 'unmappedCount', 'bargainLines',
   'consignmentDraws', 'accounts', 'statement', 'suppliers', 'transporters', 'customers',
-  'returns', 'unattributedReturns',
+  'returns', 'unattributedReturns', 'mncHoldings',
   // The rate card's own reads: which packs a customer is priced for, and how
   // many customers a pack is priced for. Both are lookups — without them here
   // every unknown op reads as an edit, and merely OPENING the card would need

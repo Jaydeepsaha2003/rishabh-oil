@@ -585,7 +585,7 @@ async function recordAudit(channel: string, args: any, result: any): Promise<voi
 export function registerIpc(): void {
   // Read-only channels don't change data, so they must not bump the revision.
   const READONLY =
-    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:splitNames$|^journal:mergePreview$|^bd:splits$|^notes:relinkCandidates$|^hostinger:status$|^hostinger:plans$|^hostinger:alert$|^journal:releasePreview$|^journal:provisional$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:subtypes$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:commission$|^lc:commissionCandidates$|^lc:refund$|^lc:refundCandidates$|^journal:accountNames$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:salesInvoices$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^bd:receiptParts$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^tbill:rcmRegister$|^production:report$|^production:mix$|^repairs:splitTanker:list$|^vouchers:cashflow$|^repairs:paisa:list$|^tallyNotes:(preview|salesCheck|salesPreview|registerCheck|registerPreview|health|batches|companyBanks|bankSuggest|bankCheck|bankPreview|drafts|bankBooks|bankBook|lineNotes)$|^sales:(tdsPreview|tdsMap|cancelledNos|shortageNotes|shortageNoteMap)$|^orders:(dnNotes|dnNoteMap)$|^suppliers:tdsRecalc$|^(bd|lc):refund(Dues|Totals)$/
+    /:list$|:get$|:items$|:issuances$|:sheet$|:outstanding$|:all$|:summary$|:transfers$|:fyTaxable$|:needs$|:breakdown$|:nextNo$|:liveUsers$|:ips$|:logs$|:dispatchableSales$|:mine$|:pendingCount$|:pending$|:lots$|:unmapped$|:unmappedCount$|:bargainLines$|:bargainNotes$|:bargainInterest$|:consignmentDraws$|^access:heartbeat$|^db:ping$|^db:snapshot$|^app:revision$|^auth:login$|^journal:booksFrom$|^tally:map$|^journal:openings$|^journal:opening$|^journal:accounts$|^journal:statement$|^journal:splitNames$|^journal:mergePreview$|^bd:splits$|^notes:relinkCandidates$|^hostinger:status$|^hostinger:plans$|^hostinger:alert$|^journal:releasePreview$|^journal:provisional$|^journal:trialBalance$|^journal:groups$|^journal:groupNames$|^journal:groupTree$|^journal:ledgerMap$|^journal:pendingRefs$|^journal:billsOutstanding$|^journal:tradingAccount$|^dashboard:stats$|^vouchers:nextCode$|^vouchers:forDocument$|^vouchers:subtypes$|^vouchers:alterInfo$|^tfreight:kpis$|^dashboard:position$|^dashboard:layout$|^dashboard:saveLayout$|^productMerge:preview$|^skuRates:parties$|^skuRates:partyCounts$|^consignment:openingLog$|^tags:list$|^tags:for$|^tags:contents$|^consignment:openingLots$|^consignment:invoices$|^tankers:quality$|^tankers:qualityMany$|^tankers:ffaHistory$|^orders:quality$|^gate:partyCategories$|^gate:mncHoldings$|^gate:waivedOuts$|^gate:forRecord$|^notify:rules$|^notify:list$|^notify:run$|^notify:preview$|^notify:people$|^notify:mutes$|^treasury:alerts$|^treasury:paymentTracker$|^facility:exposures$|^facility:headroom$|^company:setActive$|^company:getActive$|^factory:active$|^factory:companies$|^session:setUser$|^lc:repayments$|^lc:parts$|^lc:parts$|^lc:allRepayments$|^lc:getLimit$|^lc:bankLimits$|^lc:commission$|^lc:commissionCandidates$|^lc:refund$|^lc:refundCandidates$|^journal:accountNames$|^lc:paymentIns$|^lc:openTradingInvoices$|^files:pickDocument$|^files:openDocument$|^bankRecon:imports$|^bankRecon:list$|^bankRecon:suggest$|^bd:kpis$|^bd:limits$|^skuStock:adjustments$|^skuOpening:list$|^skuOpening:date$|^stockCount:previous$|^orders:intercompanySource$|^stockOpening:list$|^stockOpening:date$|^stockOpening:sets$|^stockOpening:setLines$|^stockOpening:ppStages$|^stockOpening:ppFreeTotals$|^production:ppDraws$|^bargains:linkedInvoices$|^bargains:linkedVouchers$|^bargains:voucherChoices$|^salesBargains:linkedVouchers$|^salesBargains:voucherChoices$|^bargains:adjustments$|^history:list$|^stockOpening:ppVessels$|^stockOpening:ppReceivers$|^stockOpening:ppWriteoffs$|^work:board$|^work:cutoff$|^work:processes$|^formulationSubcategory:list$|^formulations:versions$|^facility:limitHistory$|^bd:limitReductions$|^bd:allRepayments$|^bd:interestSchedule$|^bd:interestWindow$|^bd:interestPayments$|^bd:linkedOrders$|^bd:salesInvoices$|^bd:parties$|^bd:allParties$|^bd:openTradingInvoices$|^bd:paymentIns$|^bd:partyPayments$|^bd:receiptParts$|^access:entryWindows$|^access:entityHistory$|^trading:list$|^sales:series$|^sales:invoiceGaps$|^salesBargains:returns$|^salesBargains:linkedInvoices$|^salesBargains:unattributedReturns$|^tbill:orphans$|^tbill:rcmRegister$|^production:report$|^production:mix$|^repairs:splitTanker:list$|^vouchers:cashflow$|^repairs:paisa:list$|^tallyNotes:(preview|salesCheck|salesPreview|registerCheck|registerPreview|health|batches|companyBanks|bankSuggest|bankCheck|bankPreview|drafts|bankBooks|bankBook|lineNotes)$|^sales:(tdsPreview|tdsMap|cancelledNos|shortageNotes|shortageNoteMap)$|^orders:(dnNotes|dnNoteMap)$|^suppliers:tdsRecalc$|^(bd|lc):refund(Dues|Totals)$/
   // The Tally checks and previews only READ: they compare a file with the books
   // and post nothing. Gated as writes, every click logged the whole uploaded
   // file to the audit trail and woke every open screen to re-read — which is
@@ -1733,12 +1733,19 @@ export function registerIpc(): void {
     'gate:forRecord',
     (_e, args: { orderId?: number; saleIds?: number[]; invoiceGroup?: string }) => gateEntriesFor(args)
   )
-  handle('gate:create', (_e, { values }: { values: Row }) => createGateEntry(values))
-  handle('gate:update', (_e, { id, values }: { id: number; values: Row }) =>
-    updateGateEntry(id, values)
-  )
-  handle('gate:complete', (_e, { id, gross, tare }: { id: number; gross: number; tare: number }) =>
-    completeGateEntry(id, gross, tare)
+  // An MNC stock out at the gate books / updates / removes its stock out once weighed.
+  const mncSync = async <T,>(id: number, r: T): Promise<T> => {
+    await (await import('./consignment')).syncMncGateOut(id)
+    return r
+  }
+  handle('gate:mncHoldings', async () => (await import('./consignment')).mncHoldings())
+  handle('gate:create', async (_e, { values }: { values: Row }) => {
+    const r = await createGateEntry(values)
+    return mncSync(r.id, r)
+  })
+  handle('gate:update', async (_e, { id, values }: { id: number; values: Row }) => mncSync(id, await updateGateEntry(id, values)))
+  handle('gate:complete', async (_e, { id, gross, tare }: { id: number; gross: number; tare: number }) =>
+    mncSync(id, await completeGateEntry(id, gross, tare))
   )
   handle(
     'gate:weights',
@@ -1764,12 +1771,15 @@ export function registerIpc(): void {
         outDate?: string | null
         outTime?: string | null
       }
-    ) => saveGateWeights(id, gross, tare, awaitingGrossOut, dispatchQty, invoiceGroup, outDate, outTime)
+    ) => saveGateWeights(id, gross, tare, awaitingGrossOut, dispatchQty, invoiceGroup, outDate, outTime).then((r) => mncSync(id, r))
   )
-  handle('gate:skipWeighment', (_e, { id }: { id: number }) => skipGateWeighment(id))
-  handle('gate:delete', (_e, { id }: { id: number }) => deleteGateEntry(id))
-  handle('gate:reject', (_e, { id, reason }: { id: number; reason: string }) => rejectGateEntry(id, reason))
-  handle('gate:unreject', (_e, { id }: { id: number }) => unrejectGateEntry(id))
+  handle('gate:skipWeighment', async (_e, { id }: { id: number }) => mncSync(id, await skipGateWeighment(id)))
+  handle('gate:delete', async (_e, { id }: { id: number }) => {
+    const r = await deleteGateEntry(id)
+    return mncSync(id, r)
+  })
+  handle('gate:reject', async (_e, { id, reason }: { id: number; reason: string }) => mncSync(id, await rejectGateEntry(id, reason)))
+  handle('gate:unreject', async (_e, { id }: { id: number }) => mncSync(id, await unrejectGateEntry(id)))
 
   handle('lc:list', (_e, args?: { companyId?: number }) => listLCs(args?.companyId))
   handle('treasury:alerts', (_e, a?: { all?: boolean }) => treasuryAlerts({ all: !!a?.all }))

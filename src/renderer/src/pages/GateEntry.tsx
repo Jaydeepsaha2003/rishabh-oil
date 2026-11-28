@@ -114,7 +114,11 @@ const blankGateOut = (): Row => ({
   no_weighment: false,
   note: '',
   // 's:12' / 'c:5' — named by hand when no sale invoice supplies the party.
-  party: ''
+  party: '',
+  // MNC STOCK OUT: the party takes its own stock (held with us) away. The
+  // holding is 'supplierId:productId'; the weighed net becomes its stock out.
+  mnc: false,
+  mnc_key: ''
 })
 
 // One day either side, on the local calendar.
@@ -649,6 +653,8 @@ export function GateEntry(): React.JSX.Element {
     )
   }
   const [gateOut, setGateOut] = useState<Row>(blankGateOut())
+  // The MNC parties' stock still with us, for a Gate Out "MNC stock out".
+  const [mncHold, setMncHold] = useState<Row[]>([])
   const [savingOut, setSavingOut] = useState(false)
   // The Gate out form stays folded away until it is wanted — most of the time
   // this tab is opened to weigh something already in the queue below, not to
@@ -685,7 +691,7 @@ export function GateEntry(): React.JSX.Element {
     // page blink every few seconds. The rows already on screen stay until the
     // new ones arrive. See useLiveRefresh.
     if (!background) setLoading(true)
-    const [g, pt, sl, wv, nextNo, nextOutNo, sup, prd, cus, pcats] = await Promise.all([
+    const [g, pt, sl, wv, nextNo, nextOutNo, sup, prd, cus, pcats, mh] = await Promise.all([
       window.api.gate.list(),
       // the gate serves every company — list tankers across all of them
       window.api.tankers.list(true),
@@ -696,8 +702,10 @@ export function GateEntry(): React.JSX.Element {
       window.api.data.list('suppliers'),
       window.api.data.list('products'),
       window.api.data.list('customers').catch(() => [] as Row[]),
-      window.api.gate.partyCategories().catch(() => [] as Row[])
+      window.api.gate.partyCategories().catch(() => [] as Row[]),
+      window.api.gate.mncHoldings().catch(() => [] as Row[])
     ])
+    setMncHold(mh)
     setRows(g)
     // The gate sees MAIN parties only (DIL EXIM, not DIL EXIM – RAJKOT).
     const supMain = mainNameOf(sup)
@@ -914,7 +922,12 @@ export function GateEntry(): React.JSX.Element {
   // Gate OUT — normally with a sale invoice; a vehicle can also leave without
   // a bill when that is said explicitly and the reason is recorded.
   async function recordGateOut(): Promise<void> {
-    if (!gateOut.invoice_group && !String(gateOut.note || '').trim()) {
+    const mncPick = gateOut.mnc ? mncHold.find((h) => `${String(h.supplier_id)}:${String(h.product_id)}` === String(gateOut.mnc_key)) : null
+    if (gateOut.mnc && !mncPick) return void toast.error('Pick whose stock is going out (party · product)')
+    const noteOut =
+      String(gateOut.note || '').trim() ||
+      (mncPick ? `MNC stock out — ${String(mncPick.supplier_name || '')} · ${String(mncPick.product_code || mncPick.product_name || '')}` : '')
+    if (!gateOut.invoice_group && !noteOut) {
       return void toast.error('Pick the sale invoice, or write why the vehicle is leaving without one')
     }
     if (!String(gateOut.tanker_no || '').trim()) return void toast.error('Enter the vehicle number')
@@ -923,15 +936,21 @@ export function GateEntry(): React.JSX.Element {
       await window.api.gate.create({
         ...gateOut,
         direction: 'out',
-        invoice_group: gateOut.invoice_group || null,
+        note: noteOut || null,
         tanker_id: null,
-        // A hand-named party, for an exit the invoice does not account for.
-        supplier_id: String(gateOut.party || '').startsWith('s:')
+        // A hand-named party, for an exit the invoice does not account for —
+        // or, for an MNC stock out, the party whose stock it is.
+        supplier_id: mncPick
+          ? Number(mncPick.supplier_id)
+          : String(gateOut.party || '').startsWith('s:')
+            ? Number(String(gateOut.party).slice(2))
+            : null,
+        customer_id: !mncPick && String(gateOut.party || '').startsWith('c:')
           ? Number(String(gateOut.party).slice(2))
           : null,
-        customer_id: String(gateOut.party || '').startsWith('c:')
-          ? Number(String(gateOut.party).slice(2))
-          : null,
+        oil_type_id: mncPick ? Number(mncPick.product_id) : null,
+        is_direct_mnc: !!mncPick,
+        invoice_group: mncPick ? null : gateOut.invoice_group || null,
         dispatch_qty: Number(gateOut.dispatch_qty) || 0,
         // No invoice-derived (or hand-entered) figure yet is exactly the "the
         // challan gives none" case, not a real zero — flag it NA now so a
@@ -2951,10 +2970,33 @@ export function GateEntry(): React.JSX.Element {
               <Label>Vehicle number *</Label>
               <Input value={gateOut.tanker_no || ''} onChange={(e) => setGateOut((p) => ({ ...p, tanker_no: e.target.value }))} />
             </div>
+            {/* MNC STOCK OUT — the party taking its own stock (held with us) away.
+                Its weighed net is booked as that party's stock out. */}
+            {!gateOut.invoice_group && !isMisc(gateOut.rec_type) && (
+              <div className="flex min-w-0 flex-col gap-1 sm:col-span-2 lg:col-span-3 xl:col-span-4">
+                <label className="flex cursor-pointer items-center gap-2 rounded-[4px] border border-[#DCD6F5] bg-[#F6F4FD] px-3 py-2">
+                  <Switch checked={!!gateOut.mnc} onCheckedChange={(v) => setGateOut((p) => ({ ...p, mnc: v, mnc_key: v ? p.mnc_key : '', party: v ? '' : p.party }))} />
+                  <span className="text-[12px] font-extrabold normal-case tracking-normal text-[#3D3179]">MNC stock out — the party is taking its own stock</span>
+                  <span className="text-[11px] font-semibold normal-case tracking-normal text-[#6B6390]">the weighed net comes off what is still theirs</span>
+                </label>
+                {gateOut.mnc && (
+                  <Select searchable value={String(gateOut.mnc_key || '')} onValueChange={(v) => setGateOut((p) => ({ ...p, mnc_key: v }))}>
+                    <SelectTrigger><SelectValue placeholder={mncHold.length ? "Whose stock — party · product · still theirs" : 'No party has stock with us'} /></SelectTrigger>
+                    <SelectContent className="max-h-72">
+                      {mncHold.map((h) => (
+                        <SelectItem key={`${String(h.supplier_id)}:${String(h.product_id)}`} value={`${String(h.supplier_id)}:${String(h.product_id)}`}>
+                          {String(h.supplier_name || '')} · {String(h.product_code || h.product_name || '')} · {formatNum(h.left)} MT still theirs
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+            )}
             {/* With no invoice behind it the vehicle belongs to nobody, so the
                 party is named here — the same combined list as Gate in.
                 Miscellaneous has no trading party, so it is not asked for. */}
-            {!gateOut.invoice_group && !isMisc(gateOut.rec_type) && (
+            {!gateOut.invoice_group && !isMisc(gateOut.rec_type) && !gateOut.mnc && (
               <div className="flex min-w-0 flex-col gap-1">
                 <Label>
                   Party <span className="text-[10px] font-normal text-muted-foreground">(supplier or customer)</span>

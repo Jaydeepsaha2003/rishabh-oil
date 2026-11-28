@@ -583,6 +583,7 @@ export interface Api {
     unwaiveOut: (group: string) => Promise<{ group: string }>
     waiveOuts: (groups: string[], reason: string) => Promise<{ done: string[]; failed: { group: string; error: string }[] }>
     partyCategories: () => Promise<Row[]>
+    mncHoldings: () => Promise<Row[]>
     forRecord: (q: { orderId?: number; saleIds?: number[]; invoiceGroup?: string }) => Promise<{ rows: Row[]; hidden: number; window_from: string }>
     create: (values: Row) => Promise<{ id: number }>
     update: (id: number, values: Row) => Promise<{ id: number }>
