@@ -25432,7 +25432,28 @@ async function listPurchaseTankers(allCompanies = false, forModule) {
       WHEN 'outside_factory' THEN 4 WHEN 'inside_factory' THEN 5 ELSE 6 END, pt.id DESC
   `
   });
-  return toPlain21(res);
+  const rows2 = toPlain21(res);
+  const planned = Array.from(new Set(rows2.flatMap((r) => {
+    try {
+      return r.planned_parts && String(r.status) === "supplier_factory" ? JSON.parse(String(r.planned_parts)).map(n27).filter(Boolean) : [];
+    } catch {
+      return [];
+    }
+  })));
+  if (planned.length) {
+    const bs = toPlain21(
+      await getClient().execute(`SELECT b.id, b.bargain_no, s.name AS supplier_name FROM bargains b LEFT JOIN suppliers s ON s.id = b.supplier_id WHERE b.id IN (${planned.join(",")})`)
+    );
+    for (const r of rows2) {
+      if (!r.planned_parts || String(r.status) !== "supplier_factory") continue;
+      try {
+        r.planned_list = JSON.parse(String(r.planned_parts)).map((id) => bs.find((b) => n27(b.id) === n27(id))).filter(Boolean);
+      } catch {
+        r.planned_list = [];
+      }
+    }
+  }
+  return rows2;
 }
 async function createPurchaseTanker(v) {
   if (!v.bargain_id) throw new Error("Bargain is required");
