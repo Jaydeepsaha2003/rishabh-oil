@@ -15755,6 +15755,9 @@ async function listBdSalesInvoices(bdId) {
 }
 async function validateBd(v, cur) {
   await ensureBdPostingFields();
+  if ((!cur || "party_invoice_no" in v) && !String(v.party_invoice_no ?? "").trim()) {
+    throw new Error("Enter the party's invoice no. this bill is drawn against");
+  }
   const route = String(v.disbursement_route || "");
   const legacy = !!cur && String(cur.disbursement_route || "unconfirmed") === "unconfirmed" && route === "unconfirmed";
   if (!legacy && !["bank", "supplier"].includes(route)) throw new Error("Choose who receives the NBFC disbursement");
