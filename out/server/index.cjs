@@ -25439,8 +25439,8 @@ async function createPurchaseTanker(v) {
   const res = await getClient().execute({
     sql: `INSERT INTO purchase_tankers
       (company_id, tanker_no, loaded_date, bargain_id, supplier_id, oil_type_id, loaded_qty, uom, payment_mode,
-       transporter_id, status, condition)
-      VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'pending', ?, 'supplier_factory', ?)`,
+       transporter_id, status, condition, planned_parts)
+      VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'pending', ?, 'supplier_factory', ?, ?)`,
     args: [
       getActiveCompanyId(),
       String(v.tanker_no || "").trim(),
@@ -25450,7 +25450,12 @@ async function createPurchaseTanker(v) {
       n27(v.oil_type_id),
       v.uom || "MT",
       v.transporter_id ? n27(v.transporter_id) : null,
-      normCondition(v.condition)
+      normCondition(v.condition),
+      // Other bargains sharing this lorry (any supplier), qty set at loading.
+      (() => {
+        const ids = (Array.isArray(v.planned_parts) ? v.planned_parts : []).map(n27).filter((x) => x && x !== n27(v.bargain_id));
+        return ids.length ? JSON.stringify(Array.from(new Set(ids))) : null;
+      })()
     ]
   });
   return { id: Number(res.lastInsertRowid) };
@@ -42031,6 +42036,9 @@ var REQUIRED_COLUMNS = [
   // part, all carrying the first part's id here; they move stage by stage
   // together (orders.ts advancePurchaseTanker).
   { table: "purchase_tankers", column: "split_group", type: "INTEGER" },
+  // The other bargains named for this lorry when it was sent (JSON list of
+  // bargain ids) — offered as part rows at Loaded, qty typed there.
+  { table: "purchase_tankers", column: "planned_parts", type: "TEXT" },
   // A note typed on Mark received — kept on the bill, carried on its voucher.
   { table: "bill_discountings", column: "received_note", type: "TEXT" },
   { table: "bd_repayments", column: "tds_ledger", type: "TEXT" },
