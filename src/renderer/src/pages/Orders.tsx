@@ -1614,6 +1614,11 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
               {' '}+ {row.extra_bargain_no} <span className="text-sky-600">(split)</span>
             </span>
           )}
+          {Array.isArray(row.planned_list) && (row.planned_list as Row[]).length > 0 && (
+            <span className="ml-1.5 rounded-[3px] border border-[#C6DAF0] bg-[#EAF0FA] px-1 text-[10px] font-extrabold uppercase text-[#1B4E82]" title="Bargains named for this lorry when it was sent — their qty is typed at loading">
+              Shared lorry · {(row.planned_list as Row[]).length + 1}
+            </span>
+          )}
           {!!row.split_group && (
             <span
               title="One lorry carrying several bargains' parts — each part is its own line, moved stage by stage together"
@@ -1623,6 +1628,14 @@ export function Orders({ focusId, onFocusHandled, onBack, backLabel, onPurchaseR
             </span>
           )}
         </div>
+        {/* THE OTHER PARTIES ON THIS LORRY, one after another (named when it was sent). */}
+        {Array.isArray(row.planned_list) &&
+          (row.planned_list as Row[]).map((b, i) => (
+            <div key={i} className="mt-1.5 border-l-2 border-[#C6DAF0] pl-2">
+              <div className={cn('text-[12px] font-bold text-[#0B3D2E]', __WEB__ && '!text-[12.5px] !font-extrabold')}>{String(b.supplier_name || '')}</div>
+              <div className="text-[11px] font-semibold text-[#33473E]">{String(b.bargain_no || '')}</div>
+            </div>
+          ))}
       </TableCell>
       {/* Loaded qty, payment and invoice all say the same thing when they are
           empty: this step has not happened yet. So an unfilled one steps back

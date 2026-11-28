@@ -2189,7 +2189,30 @@ export async function listPurchaseTankers(allCompanies = false, forModule?: stri
       WHEN 'outside_factory' THEN 4 WHEN 'inside_factory' THEN 5 ELSE 6 END, pt.id DESC
   `
   })
-  return toPlain(res)
+  const rows = toPlain(res)
+  // The bargains named for a lorry when it was sent (shared lorry, not loaded
+  // yet): their numbers and suppliers, so the list shows every party on it.
+  const planned = Array.from(new Set(rows.flatMap((r) => {
+    try {
+      return r.planned_parts && String(r.status) === 'supplier_factory' ? (JSON.parse(String(r.planned_parts)) as unknown[]).map(n).filter(Boolean) : []
+    } catch {
+      return []
+    }
+  })))
+  if (planned.length) {
+    const bs = toPlain(
+      await getClient().execute(`SELECT b.id, b.bargain_no, s.name AS supplier_name FROM bargains b LEFT JOIN suppliers s ON s.id = b.supplier_id WHERE b.id IN (${planned.join(',')})`)
+    )
+    for (const r of rows) {
+      if (!r.planned_parts || String(r.status) !== 'supplier_factory') continue
+      try {
+        r.planned_list = (JSON.parse(String(r.planned_parts)) as unknown[]).map((id) => bs.find((b) => n(b.id) === n(id))).filter(Boolean)
+      } catch {
+        r.planned_list = []
+      }
+    }
+  }
+  return rows
 }
 
 export async function createPurchaseTanker(v: Row): Promise<{ id: number }> {
